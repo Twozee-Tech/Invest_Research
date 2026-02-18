@@ -238,13 +238,7 @@ case "\${1:-help}" in
             echo "Usage: invest run <account_key> [--dry-run]"
             echo ""
             echo "Accounts:"
-            cd "\$INSTALL_DIR" && python3 -c "
-import yaml
-with open('data/config.yaml') as f:
-    cfg = yaml.safe_load(f)
-for k, v in cfg.get('accounts', {}).items():
-    print(f'  {k:25s} {v.get(\"name\",k):20s} model={v.get(\"model\",\"?\")}  cron={v.get(\"cron\",\"?\")}')
-" 2>/dev/null || echo "  (check data/config.yaml)"
+            cd "\$INSTALL_DIR" && python3 -c 'import yaml; d=yaml.safe_load(open("data/config.yaml")); [print("  "+k+" - "+v.get("name",k)) for k,v in d.get("accounts",{}).items()]' 2>/dev/null || echo "  (check data/config.yaml)"
             exit 1
         fi
         shift
