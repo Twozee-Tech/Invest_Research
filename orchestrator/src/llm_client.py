@@ -115,16 +115,30 @@ class LLMClient:
 
     @staticmethod
     def _extract_json(text: str) -> dict:
-        """Extract JSON from LLM response, handling markdown code blocks."""
-        # Try to find JSON in code blocks first
-        match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
-        if match:
-            return json.loads(match.group(1).strip())
-        # Try to find raw JSON object
+        """Extract JSON object from LLM response, handling markdown code blocks.
+
+        Always returns a dict; raises ValueError if no JSON object is found.
+        """
+        # Try every code block in order (models sometimes have multiple blocks)
+        for match in re.finditer(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL):
+            try:
+                result = json.loads(match.group(1).strip())
+                if isinstance(result, dict):
+                    return result
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+        # Try to find a raw JSON object (greedy — takes outermost braces)
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if match:
-            return json.loads(match.group(0))
-        raise ValueError(f"No JSON found in response: {text[:200]}...")
+            result = json.loads(match.group(0))
+            if isinstance(result, dict):
+                return result
+            raise ValueError(
+                f"JSON parsed but is not an object (got {type(result).__name__}): {text[:200]}"
+            )
+
+        raise ValueError(f"No JSON object found in response: {text[:200]}...")
 
     def close(self) -> None:
         self._http.close()

@@ -94,38 +94,58 @@ def get_portfolio_state(
     account_name: str,
 ) -> PortfolioState:
     """Build a PortfolioState from Ghostfolio API data."""
+    _empty = PortfolioState(
+        account_id=account_id,
+        account_name=account_name,
+        total_value=0,
+        cash=0,
+        invested=0,
+        timestamp=datetime.utcnow().isoformat(),
+    )
+
     try:
         holdings_data = client.get_portfolio_holdings()
-        accounts = client.list_accounts()
+        accounts_raw = client.list_accounts()
     except Exception as e:
         logger.error("portfolio_state_fetch_failed", account_id=account_id, error=str(e))
-        return PortfolioState(
-            account_id=account_id,
-            account_name=account_name,
-            total_value=0,
-            cash=0,
-            invested=0,
-            timestamp=datetime.utcnow().isoformat(),
-        )
+        return _empty
 
-    # Find account balance (cash)
-    account_info = None
-    for acc in accounts:
-        if acc.get("id") == account_id:
-            account_info = acc
-            break
+    try:
+        # list_accounts() returns a list in most Ghostfolio versions,
+        # but some versions wrap it: {"accounts": [...]}
+        if isinstance(accounts_raw, list):
+            accounts = accounts_raw
+        elif isinstance(accounts_raw, dict):
+            accounts = accounts_raw.get("accounts", []) or []
+        else:
+            accounts = []
 
-    cash = account_info.get("balance", 0) if account_info else 0
+        # Find account balance (cash)
+        account_info = None
+        for acc in accounts:
+            if isinstance(acc, dict) and acc.get("id") == account_id:
+                account_info = acc
+                break
 
-    # Build positions from holdings that belong to this account
-    positions = []
-    sector_totals: dict[str, float] = {}
-    total_invested = 0.0
+        cash = account_info.get("balance", 0) if isinstance(account_info, dict) else 0
 
-    holdings = holdings_data if isinstance(holdings_data, dict) else {}
-    for symbol, holding in holdings.items():
-        # Filter holdings for this account
-        if isinstance(holding, dict):
+        # Ghostfolio wraps holdings: {"holdings": {...}} in some versions
+        if isinstance(holdings_data, dict) and "holdings" in holdings_data:
+            raw_holdings = holdings_data["holdings"]
+        else:
+            raw_holdings = holdings_data
+
+        # Build positions from holdings that belong to this account
+        positions = []
+        sector_totals: dict[str, float] = {}
+        total_invested = 0.0
+
+        holdings = raw_holdings if isinstance(raw_holdings, dict) else {}
+        for symbol, holding in holdings.items():
+            # Filter holdings for this account
+            if not isinstance(holding, dict):
+                continue
+
             accounts_in_holding = holding.get("accounts", {})
             if account_id not in accounts_in_holding and accounts_in_holding:
                 continue
@@ -140,7 +160,14 @@ def get_portfolio_state(
             investment = holding.get("investment", quantity * avg_cost)
             unrealized_pl = market_value - investment
             unrealized_pl_pct = (unrealized_pl / investment * 100) if investment > 0 else 0
-            sector = holding.get("sectors", [{}])[0].get("name", "Unknown") if holding.get("sectors") else "Unknown"
+
+            # sectors may be a list of dicts {"name": "Tech"} or plain strings
+            sectors_raw = holding.get("sectors") or []
+            if sectors_raw:
+                first = sectors_raw[0]
+                sector = first.get("name", "Unknown") if isinstance(first, dict) else str(first)
+            else:
+                sector = "Unknown"
 
             position = Position(
                 symbol=symbol,
@@ -158,38 +185,42 @@ def get_portfolio_state(
             total_invested += investment
             sector_totals[sector] = sector_totals.get(sector, 0) + market_value
 
-    total_market = sum(p.market_value for p in positions)
-    total_value = total_market + cash
+        total_market = sum(p.market_value for p in positions)
+        total_value = total_market + cash
 
-    # Compute weights
-    for p in positions:
-        p.weight_pct = (p.market_value / total_value * 100) if total_value > 0 else 0
+        # Compute weights
+        for p in positions:
+            p.weight_pct = (p.market_value / total_value * 100) if total_value > 0 else 0
 
-    sector_weights = {}
-    for sector, val in sector_totals.items():
-        sector_weights[sector] = (val / total_value * 100) if total_value > 0 else 0
+        sector_weights = {}
+        for sector, val in sector_totals.items():
+            sector_weights[sector] = (val / total_value * 100) if total_value > 0 else 0
 
-    total_pl = total_market - total_invested
-    total_pl_pct = (total_pl / total_invested * 100) if total_invested > 0 else 0
+        total_pl = total_market - total_invested
+        total_pl_pct = (total_pl / total_invested * 100) if total_invested > 0 else 0
 
-    state = PortfolioState(
-        account_id=account_id,
-        account_name=account_name,
-        total_value=total_value,
-        cash=cash,
-        invested=total_invested,
-        positions=positions,
-        total_pl=total_pl,
-        total_pl_pct=total_pl_pct,
-        sector_weights=sector_weights,
-        timestamp=datetime.utcnow().isoformat(),
-    )
+        state = PortfolioState(
+            account_id=account_id,
+            account_name=account_name,
+            total_value=total_value,
+            cash=cash,
+            invested=total_invested,
+            positions=positions,
+            total_pl=total_pl,
+            total_pl_pct=total_pl_pct,
+            sector_weights=sector_weights,
+            timestamp=datetime.utcnow().isoformat(),
+        )
 
-    logger.info(
-        "portfolio_state_loaded",
-        account=account_name,
-        total_value=total_value,
-        positions=len(positions),
-        cash=cash,
-    )
-    return state
+        logger.info(
+            "portfolio_state_loaded",
+            account=account_name,
+            total_value=total_value,
+            positions=len(positions),
+            cash=cash,
+        )
+        return state
+
+    except Exception as e:
+        logger.error("portfolio_state_build_failed", account_id=account_id, error=str(e))
+        return _empty

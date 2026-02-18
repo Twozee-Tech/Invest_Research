@@ -107,9 +107,9 @@ class AuditLogger:
             json.dump(log_entry, f, indent=2, default=str)
 
         # Write summary to SQLite
-        analysis = pass1_response or {}
-        decision = pass2_response or {}
-        p_before = portfolio_before or {}
+        analysis = pass1_response if isinstance(pass1_response, dict) else {}
+        decision = pass2_response if isinstance(pass2_response, dict) else {}
+        p_before = portfolio_before if isinstance(portfolio_before, dict) else {}
 
         try:
             with sqlite3.connect(self.db_path) as conn:
@@ -168,12 +168,18 @@ class AuditLogger:
                     with open(log_file) as f:
                         entry = json.load(f)
                     decision = entry.get("pass2", {}).get("response", {})
+                    if not isinstance(decision, dict):
+                        decision = {}
                     actions_raw = decision.get("actions", [])
+                    if not isinstance(actions_raw, list):
+                        actions_raw = []
                     trades = entry.get("executed_trades", [])
 
                     # Match results to actions
                     actions = []
                     for a in actions_raw:
+                        if not isinstance(a, dict):
+                            continue
                         action_data = {
                             "type": a.get("type"),
                             "symbol": a.get("symbol"),
@@ -195,7 +201,7 @@ class AuditLogger:
                         "actions": actions,
                         "hold_reason": decision.get("reasoning", "")[:100] if not actions else "",
                     })
-                except (FileNotFoundError, json.JSONDecodeError):
+                except (FileNotFoundError, json.JSONDecodeError, AttributeError, TypeError, KeyError):
                     continue
 
             return history
