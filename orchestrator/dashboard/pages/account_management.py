@@ -11,7 +11,7 @@ from src.llm_client import LLMClient
 from src.account_manager import AccountManager
 from src.ghostfolio_client import GhostfolioClient
 
-CONFIG_PATH = Path("config.yaml")
+CONFIG_PATH = Path("data/config.yaml")
 
 STRATEGY_TEMPLATES = {
     "core_satellite": {

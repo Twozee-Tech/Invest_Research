@@ -44,7 +44,7 @@ logger = structlog.get_logger()
 class Orchestrator:
     """Main orchestrator that runs the full decision cycle for an account."""
 
-    def __init__(self, config_path: str = "config.yaml", dry_run: bool = False):
+    def __init__(self, config_path: str = "data/config.yaml", dry_run: bool = False):
         self.config_path = config_path
         self.dry_run = dry_run
         self._load_config()
@@ -309,7 +309,7 @@ def main():
     parser.add_argument("--once", type=str, help="Run single cycle for account key, then exit")
     parser.add_argument("--all", action="store_true", help="Run all accounts once, then exit")
     parser.add_argument("--dry-run", action="store_true", help="Don't execute real trades")
-    parser.add_argument("--config", default="config.yaml", help="Config file path")
+    parser.add_argument("--config", default="data/config.yaml", help="Config file path")
     args = parser.parse_args()
 
     orch = Orchestrator(config_path=args.config, dry_run=args.dry_run)

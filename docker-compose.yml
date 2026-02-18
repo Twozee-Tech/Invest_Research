@@ -18,7 +18,6 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
-      - ./config.yaml:/app/config.yaml
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]

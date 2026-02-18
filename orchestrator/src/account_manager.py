@@ -16,7 +16,7 @@ logger = structlog.get_logger()
 class AccountManager:
     """Manages account lifecycle between config.yaml and Ghostfolio."""
 
-    def __init__(self, config_path: str = "config.yaml", client: GhostfolioClient | None = None):
+    def __init__(self, config_path: str = "data/config.yaml", client: GhostfolioClient | None = None):
         self.config_path = Path(config_path)
         self.client = client or GhostfolioClient()
         self._config: dict | None = None

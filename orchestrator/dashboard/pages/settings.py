@@ -8,7 +8,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-CONFIG_PATH = Path("config.yaml")
+CONFIG_PATH = Path("data/config.yaml")
 
 
 def load_config():

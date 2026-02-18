@@ -13,7 +13,7 @@ from src.audit_logger import AuditLogger
 
 def load_config():
     try:
-        config_path = Path("config.yaml")
+        config_path = Path("data/config.yaml")
         with open(config_path) as f:
             return yaml.safe_load(f)
     except (OSError, FileNotFoundError):
