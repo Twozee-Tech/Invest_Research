@@ -141,6 +141,8 @@ mkdir -p "$INSTALL_DIR/orchestrator/src" \
          "$INSTALL_DIR/orchestrator/dashboard/components" \
          "$INSTALL_DIR/logs" \
          "$INSTALL_DIR/data"
+# Ensure data/ and logs/ are writable by the container regardless of Docker mode
+chmod 777 "$INSTALL_DIR/logs" "$INSTALL_DIR/data"
 
 curl -fsSL "$REPO_RAW/orchestrator/Dockerfile"        -o "$INSTALL_DIR/orchestrator/Dockerfile"
 curl -fsSL "$REPO_RAW/orchestrator/pyproject.toml"    -o "$INSTALL_DIR/orchestrator/pyproject.toml"
@@ -209,6 +211,7 @@ INSTALL_DIR="$INSTALL_DIR"
 case "\${1:-help}" in
     start)
         echo "Starting orchestrator + dashboard..."
+        chmod 777 "\$INSTALL_DIR/data" "\$INSTALL_DIR/logs" 2>/dev/null || true
         cd "\$INSTALL_DIR" && docker compose up -d
         echo ""
         echo "Dashboard: http://localhost:8501"
@@ -256,6 +259,7 @@ for k, v in cfg.get('accounts', {}).items():
         ;;
     rebuild)
         echo "Rebuilding Docker image (no cache)..."
+        chmod 777 "\$INSTALL_DIR/data" "\$INSTALL_DIR/logs" 2>/dev/null || true
         cd "\$INSTALL_DIR" && docker compose build --no-cache && docker compose up -d
         echo "Rebuilt. Dashboard: http://localhost:8501"
         ;;
