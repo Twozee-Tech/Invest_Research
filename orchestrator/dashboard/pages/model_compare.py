@@ -1,7 +1,6 @@
 """Model comparison page: compare LLM performance across accounts."""
 
 import streamlit as st
-import yaml
 import sqlite3
 from pathlib import Path
 import sys
@@ -9,17 +8,9 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.audit_logger import AuditLogger
+from dashboard.config_utils import load_config
 
 DB_PATH = Path("data/audit.db")
-
-
-def load_config():
-    try:
-        config_path = Path("data/config.yaml")
-        with open(config_path) as f:
-            return yaml.safe_load(f)
-    except (OSError, FileNotFoundError):
-        return {"accounts": {}}
 
 
 st.title("Model Comparison")

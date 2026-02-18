@@ -1,21 +1,13 @@
 """Run control page: manual trigger, dry-run, pause/resume, force sell all."""
 
 import streamlit as st
-import yaml
 from pathlib import Path
 import sys
 import subprocess
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-
-def load_config():
-    try:
-        config_path = Path("data/config.yaml")
-        with open(config_path) as f:
-            return yaml.safe_load(f)
-    except (OSError, FileNotFoundError):
-        return {"accounts": {}}
+from dashboard.config_utils import load_config
 
 
 st.title("Run Control")

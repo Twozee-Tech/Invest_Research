@@ -1,7 +1,6 @@
 """Account management page: create, edit, delete accounts."""
 
 import streamlit as st
-import yaml
 from pathlib import Path
 import sys
 
@@ -9,9 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.llm_client import LLMClient
 from src.account_manager import AccountManager
-from src.ghostfolio_client import GhostfolioClient
-
-CONFIG_PATH = Path("data/config.yaml")
+from dashboard.config_utils import load_config, save_config, CONFIG_PATH
 
 STRATEGY_TEMPLATES = {
     "core_satellite": {
@@ -40,23 +37,16 @@ SCHEDULE_PRESETS = {
     "Monthly (1st, 20:00)": "0 20 1 * *",
 }
 
-
-def load_config():
-    try:
-        with open(CONFIG_PATH) as f:
-            return yaml.safe_load(f)
-    except (OSError, FileNotFoundError):
-        return {"defaults": {"initial_budget": 10000, "currency": "USD"}, "accounts": {}}
-
-
-def save_config(config):
-    with open(CONFIG_PATH, "w") as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+DEFAULT_WATCHLISTS = {
+    "core_satellite": "SPY, QQQ, VTI, AAPL, MSFT, GOOGL, AMZN, NVDA, BRK-B, JPM",
+    "value_investing": "BRK-B, JPM, JNJ, PG, KO, VZ, XOM, CVX, WMT, BAC",
+    "momentum": "NVDA, AMD, TSLA, SMCI, META, PLTR, ARM, CRWD, PANW, SQ",
+}
 
 
 st.title("Account Management")
 
-config = load_config()
+config = load_config(fallback={"defaults": {"initial_budget": 10000, "currency": "USD"}, "accounts": {}})
 accounts = config.get("accounts", {})
 
 # Fetch available models
@@ -77,6 +67,9 @@ except Exception:
 # Existing accounts
 st.subheader("Existing Accounts")
 
+if not accounts:
+    st.info("No accounts configured yet. Create one below.")
+
 for key, acct in accounts.items():
     name = acct.get("name", key)
     with st.expander(f"{name} ({key})", expanded=False):
@@ -87,7 +80,6 @@ for key, acct in accounts.items():
             st.write(f"**Schedule:** `{acct.get('cron')}` | **Strategy:** {acct.get('strategy')}")
             st.write(f"**Watchlist:** {', '.join(acct.get('watchlist', []))}")
 
-            # Edit model
             new_model = st.selectbox(
                 "Change Model",
                 options=available_models,
@@ -101,7 +93,6 @@ for key, acct in accounts.items():
                     st.success(f"Model updated to {new_model}")
                     st.rerun()
 
-            # Edit watchlist
             new_watchlist = st.text_input(
                 "Watchlist (comma-separated)",
                 value=", ".join(acct.get("watchlist", [])),
@@ -124,21 +115,33 @@ for key, acct in accounts.items():
 
 st.divider()
 
-# Create new account
+# ── Create New Account ───────────────────────────────────────────────────────
 st.subheader("Create New Account")
 
 st.info(
     "Each account is an independent AI portfolio managed by a dedicated LLM. "
     "It runs on its own schedule, uses its own strategy, and trades inside its own "
-    "Ghostfolio portfolio. You can run multiple accounts in parallel with different "
-    "models and strategies to compare performance."
+    "Ghostfolio portfolio. You can run multiple accounts in parallel to compare models."
 )
 
-DEFAULT_WATCHLISTS = {
-    "core_satellite": "SPY, QQQ, VTI, AAPL, MSFT, GOOGL, AMZN, NVDA, BRK-B, JPM",
-    "value_investing": "BRK-B, JPM, JNJ, PG, KO, VZ, XOM, CVX, WMT, BAC",
-    "momentum": "NVDA, AMD, TSLA, SMCI, META, PLTR, ARM, CRWD, PANW, SQ",
-}
+# Strategy selector is OUTSIDE the form so changing it immediately updates
+# the description and watchlist default (inside a form only submit triggers rerun).
+st.markdown("##### Strategy")
+st.caption(
+    "The strategy shapes the LLM's decision-making style — system prompt, "
+    "metrics it focuses on, and time horizon."
+)
+strategy = st.selectbox(
+    "Strategy Template",
+    options=list(STRATEGY_TEMPLATES.keys()),
+    key="new_account_strategy",
+)
+template = STRATEGY_TEMPLATES[strategy]
+st.info(
+    f"**{template['description']}**  \n"
+    f"Horizon: *{template['horizon']}*  \n"
+    f"Key metrics: {', '.join(template['preferred_metrics'])}"
+)
 
 with st.form("new_account"):
     col_name, col_key = st.columns(2)
@@ -158,8 +161,7 @@ with st.form("new_account"):
     st.markdown("##### Model")
     st.caption(
         "The **Primary Model** does all analysis. The **Fallback** is used automatically "
-        "if the primary fails (timeout, bad JSON, empty response). Qwen3-Next is fast and "
-        "reliable; Nemotron is a thinking model that reasons deeper but is slower."
+        "if the primary fails (timeout, bad JSON, empty response)."
     )
     col1, col2 = st.columns(2)
     with col1:
@@ -173,39 +175,24 @@ with st.form("new_account"):
 
     st.markdown("##### Schedule")
     st.caption(
-        "How often the AI runs its full analysis-and-trade cycle. "
-        "**Daily** suits momentum strategies (frequent signals). "
-        "**Weekly** is good for balanced portfolios. "
-        "**Monthly** matches long-term value investing."
+        "How often the AI runs. **Daily** suits momentum. "
+        "**Weekly** suits balanced. **Monthly** suits value investing."
     )
     schedule_preset = st.selectbox("Schedule", options=list(SCHEDULE_PRESETS.keys()) + ["Custom"])
     if schedule_preset == "Custom":
         cron = st.text_input(
             "Custom Cron Expression",
             placeholder="0 20 * * 0",
-            help="Standard cron: minute hour day month weekday. Example: '0 20 * * 0' = Sunday 20:00.",
+            help="Standard cron: minute hour day month weekday.",
         )
     else:
         cron = SCHEDULE_PRESETS[schedule_preset]
         st.code(cron, language=None)
 
-    st.markdown("##### Strategy")
-    st.caption(
-        "The strategy shapes the LLM's decision-making style. It affects the system prompt "
-        "sent to the model, the metrics it focuses on, and the time horizon it reasons over."
-    )
-    strategy = st.selectbox("Strategy Template", options=list(STRATEGY_TEMPLATES.keys()))
-    template = STRATEGY_TEMPLATES[strategy]
-    st.info(
-        f"**{template['description']}**  \n"
-        f"Horizon: *{template['horizon']}*  \n"
-        f"Key metrics: {', '.join(template['preferred_metrics'])}"
-    )
-
     st.markdown("##### Risk Profile")
     st.caption(
-        "These limits are enforced by the Risk Manager **before** any trade is sent to Ghostfolio. "
-        "The LLM may propose trades that violate these rules — they get rejected or trimmed automatically."
+        "Enforced by the Risk Manager before any trade reaches Ghostfolio. "
+        "LLM proposals that violate these rules are rejected or trimmed automatically."
     )
     rcol1, rcol2, rcol3 = st.columns(3)
     with rcol1:
@@ -215,44 +202,46 @@ with st.form("new_account"):
         )
         min_cash = st.number_input(
             "Min Cash %", 5, 50, 10,
-            help="Always keep at least this % in cash. Prevents going fully invested.",
+            help="Always keep at least this % in cash.",
         )
     with rcol2:
         stop_loss = st.number_input(
             "Stop Loss %", -50, -1, -15,
-            help="If total portfolio drops this % from peak, the AI is forced to de-risk (sell down to 50% equity).",
+            help="Portfolio drawdown from peak that triggers forced de-risking.",
         )
         max_trades = st.number_input(
             "Max Trades/Cycle", 1, 20, 5,
-            help="Cap on trades executed per run. Lowest-urgency trades are dropped first if limit is exceeded.",
+            help="Cap on trades per run. Lowest-urgency trades dropped first.",
         )
     with rcol3:
         min_hold = st.number_input(
             "Min Hold Days", 0, 365, 14,
-            help="Prevents the AI from selling a position it just bought. 0 = no restriction.",
+            help="Prevents selling a position bought less than N days ago.",
         )
         max_sector = st.number_input(
             "Max Sector %", 10, 100, 40,
-            help="Maximum portfolio exposure to any single sector (e.g., Tech, Energy).",
+            help="Maximum exposure to any single sector.",
         )
 
     st.markdown("##### Watchlist")
     st.caption(
-        "Tickers the AI focuses on each cycle. It fetches price, news, and technicals for "
-        "every symbol here. A focused list of 8–15 symbols works best — too many dilutes the "
-        "LLM context. Leave blank to use the strategy default below."
+        "Tickers the AI analyses each cycle (price, news, technicals). "
+        "8–15 symbols works best. Pre-filled with the strategy default."
     )
+    # key includes strategy so Streamlit resets value when strategy changes
     watchlist_str = st.text_input(
         "Tickers (comma-separated)",
         value=DEFAULT_WATCHLISTS.get(strategy, ""),
-        help="e.g. SPY, QQQ, AAPL, NVDA  — uppercase, real ticker symbols only.",
+        key=f"watchlist_input_{strategy}",
+        help="e.g. SPY, QQQ, AAPL, NVDA — uppercase ticker symbols.",
     )
-    st.caption(f"Default for *{strategy}*: `{DEFAULT_WATCHLISTS.get(strategy, 'none')}`")
 
     submitted = st.form_submit_button("Create Account", type="primary")
 
     if submitted and name and key:
         watchlist = [s.strip().upper() for s in watchlist_str.split(",") if s.strip()]
+        if not watchlist:
+            watchlist = [s.strip().upper() for s in DEFAULT_WATCHLISTS.get(strategy, "").split(",") if s.strip()]
 
         risk_profile = {
             "max_position_pct": max_pos,

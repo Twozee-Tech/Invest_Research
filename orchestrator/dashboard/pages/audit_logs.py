@@ -1,7 +1,6 @@
 """Audit logs page: full prompt/response viewer with filters."""
 
 import streamlit as st
-import yaml
 import json
 from pathlib import Path
 import sys
@@ -9,15 +8,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.audit_logger import AuditLogger
-
-
-def load_config():
-    try:
-        config_path = Path("data/config.yaml")
-        with open(config_path) as f:
-            return yaml.safe_load(f)
-    except (OSError, FileNotFoundError):
-        return {"accounts": {}}
+from dashboard.config_utils import load_config
 
 
 st.title("Audit Logs")

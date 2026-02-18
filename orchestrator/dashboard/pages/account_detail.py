@@ -1,7 +1,6 @@
 """Account detail page: positions, decision history, P/L per holding."""
 
 import streamlit as st
-import yaml
 from pathlib import Path
 import sys
 import json
@@ -9,15 +8,7 @@ import json
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.audit_logger import AuditLogger
-
-
-def load_config():
-    try:
-        config_path = Path("data/config.yaml")
-        with open(config_path) as f:
-            return yaml.safe_load(f)
-    except (OSError, FileNotFoundError):
-        return {"accounts": {}}
+from dashboard.config_utils import load_config
 
 
 st.title("Account Detail")

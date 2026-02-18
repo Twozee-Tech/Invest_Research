@@ -157,8 +157,9 @@ for f in __init__ main ghostfolio_client llm_client market_data technical_indica
 done
 
 # Dashboard
-curl -fsSL "$REPO_RAW/orchestrator/dashboard/__init__.py" -o "$INSTALL_DIR/orchestrator/dashboard/__init__.py"
-curl -fsSL "$REPO_RAW/orchestrator/dashboard/app.py"      -o "$INSTALL_DIR/orchestrator/dashboard/app.py"
+curl -fsSL "$REPO_RAW/orchestrator/dashboard/__init__.py"    -o "$INSTALL_DIR/orchestrator/dashboard/__init__.py"
+curl -fsSL "$REPO_RAW/orchestrator/dashboard/app.py"        -o "$INSTALL_DIR/orchestrator/dashboard/app.py"
+curl -fsSL "$REPO_RAW/orchestrator/dashboard/config_utils.py" -o "$INSTALL_DIR/orchestrator/dashboard/config_utils.py"
 
 for f in __init__ overview account_detail run_control model_compare audit_logs account_management settings; do
     curl -fsSL "$REPO_RAW/orchestrator/dashboard/pages/${f}.py" -o "$INSTALL_DIR/orchestrator/dashboard/pages/${f}.py"

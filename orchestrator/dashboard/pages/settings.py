@@ -1,27 +1,13 @@
 """Settings page: global config editor."""
 
 import streamlit as st
-import yaml
 import os
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-CONFIG_PATH = Path("data/config.yaml")
-
-
-def load_config():
-    try:
-        with open(CONFIG_PATH) as f:
-            return yaml.safe_load(f)
-    except (OSError, FileNotFoundError):
-        return {}
-
-
-def save_config(config):
-    with open(CONFIG_PATH, "w") as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+from dashboard.config_utils import load_config, save_config
 
 
 st.title("Settings")

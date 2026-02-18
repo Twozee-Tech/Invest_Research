@@ -1,7 +1,6 @@
 """Overview page: account cards, performance summary, next run times."""
 
 import streamlit as st
-import yaml
 from pathlib import Path
 import sys
 
@@ -10,15 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.ghostfolio_client import GhostfolioClient
 from src.audit_logger import AuditLogger
 from dashboard.components.charts import render_performance_chart
-
-
-def load_config():
-    try:
-        config_path = Path("data/config.yaml")
-        with open(config_path) as f:
-            return yaml.safe_load(f)
-    except (OSError, FileNotFoundError):
-        return {"accounts": {}}
+from dashboard.config_utils import load_config
 
 
 st.title("AI Investment Orchestrator")
