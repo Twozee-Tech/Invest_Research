@@ -127,48 +127,129 @@ st.divider()
 # Create new account
 st.subheader("Create New Account")
 
-with st.form("new_account"):
-    name = st.text_input("Account Name", placeholder="e.g., Quarterly Growth")
-    key = st.text_input("Account Key (unique, no spaces)", placeholder="e.g., quarterly_growth")
+st.info(
+    "Each account is an independent AI portfolio managed by a dedicated LLM. "
+    "It runs on its own schedule, uses its own strategy, and trades inside its own "
+    "Ghostfolio portfolio. You can run multiple accounts in parallel with different "
+    "models and strategies to compare performance."
+)
 
+DEFAULT_WATCHLISTS = {
+    "core_satellite": "SPY, QQQ, VTI, AAPL, MSFT, GOOGL, AMZN, NVDA, BRK-B, JPM",
+    "value_investing": "BRK-B, JPM, JNJ, PG, KO, VZ, XOM, CVX, WMT, BAC",
+    "momentum": "NVDA, AMD, TSLA, SMCI, META, PLTR, ARM, CRWD, PANW, SQ",
+}
+
+with st.form("new_account"):
+    col_name, col_key = st.columns(2)
+    with col_name:
+        name = st.text_input(
+            "Account Name",
+            placeholder="e.g., Weekly Growth",
+            help="Human-readable label shown in the dashboard.",
+        )
+    with col_key:
+        key = st.text_input(
+            "Account Key",
+            placeholder="e.g., weekly_growth",
+            help="Unique identifier used internally. No spaces — use underscores.",
+        )
+
+    st.markdown("##### Model")
+    st.caption(
+        "The **Primary Model** does all analysis. The **Fallback** is used automatically "
+        "if the primary fails (timeout, bad JSON, empty response). Qwen3-Next is fast and "
+        "reliable; Nemotron is a thinking model that reasons deeper but is slower."
+    )
     col1, col2 = st.columns(2)
     with col1:
         model = st.selectbox("Primary Model", options=available_models)
+    with col2:
         fallback_model = st.selectbox(
             "Fallback Model",
             options=available_models,
             index=min(1, len(available_models) - 1),
         )
-    with col2:
-        schedule_preset = st.selectbox("Schedule", options=list(SCHEDULE_PRESETS.keys()) + ["Custom"])
-        if schedule_preset == "Custom":
-            cron = st.text_input("Custom Cron", placeholder="0 20 * * 0")
-        else:
-            cron = SCHEDULE_PRESETS[schedule_preset]
-            st.code(cron)
 
+    st.markdown("##### Schedule")
+    st.caption(
+        "How often the AI runs its full analysis-and-trade cycle. "
+        "**Daily** suits momentum strategies (frequent signals). "
+        "**Weekly** is good for balanced portfolios. "
+        "**Monthly** matches long-term value investing."
+    )
+    schedule_preset = st.selectbox("Schedule", options=list(SCHEDULE_PRESETS.keys()) + ["Custom"])
+    if schedule_preset == "Custom":
+        cron = st.text_input(
+            "Custom Cron Expression",
+            placeholder="0 20 * * 0",
+            help="Standard cron: minute hour day month weekday. Example: '0 20 * * 0' = Sunday 20:00.",
+        )
+    else:
+        cron = SCHEDULE_PRESETS[schedule_preset]
+        st.code(cron, language=None)
+
+    st.markdown("##### Strategy")
+    st.caption(
+        "The strategy shapes the LLM's decision-making style. It affects the system prompt "
+        "sent to the model, the metrics it focuses on, and the time horizon it reasons over."
+    )
     strategy = st.selectbox("Strategy Template", options=list(STRATEGY_TEMPLATES.keys()))
     template = STRATEGY_TEMPLATES[strategy]
-    st.caption(template["description"])
-
-    st.write("**Risk Profile:**")
-    rcol1, rcol2, rcol3 = st.columns(3)
-    with rcol1:
-        max_pos = st.number_input("Max Position %", 5, 50, 20)
-        min_cash = st.number_input("Min Cash %", 5, 50, 10)
-    with rcol2:
-        stop_loss = st.number_input("Stop Loss %", -50, -1, -15)
-        max_trades = st.number_input("Max Trades/Cycle", 1, 20, 5)
-    with rcol3:
-        min_hold = st.number_input("Min Hold Days", 0, 365, 14)
-        max_sector = st.number_input("Max Sector %", 10, 100, 40)
-
-    watchlist_str = st.text_input(
-        "Watchlist (comma-separated)",
-        placeholder="SPY, QQQ, VTI, AAPL, MSFT",
+    st.info(
+        f"**{template['description']}**  \n"
+        f"Horizon: *{template['horizon']}*  \n"
+        f"Key metrics: {', '.join(template['preferred_metrics'])}"
     )
 
-    submitted = st.form_submit_button("Create Account")
+    st.markdown("##### Risk Profile")
+    st.caption(
+        "These limits are enforced by the Risk Manager **before** any trade is sent to Ghostfolio. "
+        "The LLM may propose trades that violate these rules — they get rejected or trimmed automatically."
+    )
+    rcol1, rcol2, rcol3 = st.columns(3)
+    with rcol1:
+        max_pos = st.number_input(
+            "Max Position %", 5, 50, 20,
+            help="Single stock can't exceed this % of total portfolio value.",
+        )
+        min_cash = st.number_input(
+            "Min Cash %", 5, 50, 10,
+            help="Always keep at least this % in cash. Prevents going fully invested.",
+        )
+    with rcol2:
+        stop_loss = st.number_input(
+            "Stop Loss %", -50, -1, -15,
+            help="If total portfolio drops this % from peak, the AI is forced to de-risk (sell down to 50% equity).",
+        )
+        max_trades = st.number_input(
+            "Max Trades/Cycle", 1, 20, 5,
+            help="Cap on trades executed per run. Lowest-urgency trades are dropped first if limit is exceeded.",
+        )
+    with rcol3:
+        min_hold = st.number_input(
+            "Min Hold Days", 0, 365, 14,
+            help="Prevents the AI from selling a position it just bought. 0 = no restriction.",
+        )
+        max_sector = st.number_input(
+            "Max Sector %", 10, 100, 40,
+            help="Maximum portfolio exposure to any single sector (e.g., Tech, Energy).",
+        )
+
+    st.markdown("##### Watchlist")
+    st.caption(
+        "Tickers the AI focuses on each cycle. It fetches price, news, and technicals for "
+        "every symbol here. A focused list of 8–15 symbols works best — too many dilutes the "
+        "LLM context. Leave blank to use the strategy default below."
+    )
+    watchlist_str = st.text_input(
+        "Tickers (comma-separated)",
+        value=DEFAULT_WATCHLISTS.get(strategy, ""),
+        help="e.g. SPY, QQQ, AAPL, NVDA  — uppercase, real ticker symbols only.",
+    )
+    st.caption(f"Default for *{strategy}*: `{DEFAULT_WATCHLISTS.get(strategy, 'none')}`")
+
+    submitted = st.form_submit_button("Create Account", type="primary")
 
     if submitted and name and key:
         watchlist = [s.strip().upper() for s in watchlist_str.split(",") if s.strip()]
