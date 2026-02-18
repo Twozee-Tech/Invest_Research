@@ -198,61 +198,61 @@ echo -e "${YELLOW}[5/5] Installing 'invest' command...${NC}"
 BIN_DIR="$HOME/.local/bin"
 mkdir -p "$BIN_DIR"
 
-cat > "$BIN_DIR/invest" << WRAPPER
+cat > "$BIN_DIR/invest" << 'WRAPPER'
 #!/bin/bash
-# AI Investment Orchestrator v${VERSION}
-# Install dir: $INSTALL_DIR
+# AI Investment Orchestrator v__VERSION__
+# Install dir: __INSTALL_DIR__
 
-INSTALL_DIR="$INSTALL_DIR"
+INSTALL_DIR="__INSTALL_DIR__"
 
-case "\${1:-help}" in
+case "${1:-help}" in
     start)
         echo "Starting orchestrator + dashboard..."
-        cd "\$INSTALL_DIR" && docker compose up -d
+        cd "$INSTALL_DIR" && docker compose up -d
         echo ""
         echo "Dashboard: http://localhost:8501"
         echo "Scheduler running in background."
         ;;
     stop)
         echo "Stopping..."
-        cd "\$INSTALL_DIR" && docker compose down
+        cd "$INSTALL_DIR" && docker compose down
         ;;
     restart)
-        cd "\$INSTALL_DIR" && docker compose restart
+        cd "$INSTALL_DIR" && docker compose restart
         echo "Restarted. Dashboard: http://localhost:8501"
         ;;
     status)
-        cd "\$INSTALL_DIR" && docker compose ps
+        cd "$INSTALL_DIR" && docker compose ps
         ;;
     logs)
-        cd "\$INSTALL_DIR" && docker compose logs -f --tail=100
+        cd "$INSTALL_DIR" && docker compose logs -f --tail=100
         ;;
     run)
         shift
-        ACCOUNT="\${1:-}"
-        if [ -z "\$ACCOUNT" ]; then
+        ACCOUNT="${1:-}"
+        if [ -z "$ACCOUNT" ]; then
             echo "Usage: invest run <account_key> [--dry-run]"
             echo ""
             echo "Accounts:"
-            cd "\$INSTALL_DIR" && python3 -c 'import yaml; d=yaml.safe_load(open("data/config.yaml")); [print("  "+k+" - "+v.get("name",k)) for k,v in d.get("accounts",{}).items()]' 2>/dev/null || echo "  (check data/config.yaml)"
+            cd "$INSTALL_DIR" && docker compose exec orchestrator python3 -c 'import yaml; d=yaml.safe_load(open("/app/data/config.yaml")); [print("  "+k+" - "+v.get("name",k)) for k,v in d.get("accounts",{}).items()]' 2>/dev/null || echo "  (start container first: invest start)"
             exit 1
         fi
         shift
-        cd "\$INSTALL_DIR" && docker compose exec orchestrator python -m src.main --once "\$ACCOUNT" \$@
+        cd "$INSTALL_DIR" && docker compose exec orchestrator python -m src.main --once "$ACCOUNT" "$@"
         ;;
     run-all)
         shift
-        cd "\$INSTALL_DIR" && docker compose exec orchestrator python -m src.main --all \$@
+        cd "$INSTALL_DIR" && docker compose exec orchestrator python -m src.main --all "$@"
         ;;
     config)
-        cd "\$INSTALL_DIR" && docker compose exec orchestrator sh -c 'cat /app/data/config.yaml' > /tmp/_invest_cfg.yaml 2>/dev/null || { echo "Container not running. Use: invest start"; exit 1; }
-        \${EDITOR:-nano} /tmp/_invest_cfg.yaml
-        cd "\$INSTALL_DIR" && docker compose exec -T orchestrator sh -c 'cat > /app/data/config.yaml' < /tmp/_invest_cfg.yaml && echo "Config saved."
+        cd "$INSTALL_DIR" && docker compose exec orchestrator sh -c 'cat /app/data/config.yaml' > /tmp/_invest_cfg.yaml 2>/dev/null || { echo "Container not running. Use: invest start"; exit 1; }
+        ${EDITOR:-nano} /tmp/_invest_cfg.yaml
+        cd "$INSTALL_DIR" && docker compose exec -T orchestrator sh -c 'cat > /app/data/config.yaml' < /tmp/_invest_cfg.yaml && echo "Config saved."
         rm -f /tmp/_invest_cfg.yaml
         ;;
     rebuild)
         echo "Rebuilding Docker image (no cache)..."
-        cd "\$INSTALL_DIR" && docker compose build --no-cache && docker compose up -d
+        cd "$INSTALL_DIR" && docker compose build --no-cache && docker compose up -d
         echo "Rebuilt. Dashboard: http://localhost:8501"
         ;;
     dashboard)
@@ -264,7 +264,7 @@ case "\${1:-help}" in
         curl -fsSL https://raw.githubusercontent.com/Twozee-Tech/Invest_Research/main/install.sh | bash
         ;;
     *)
-        echo "AI Investment Orchestrator v${VERSION}"
+        echo "AI Investment Orchestrator v__VERSION__"
         echo ""
         echo "Usage: invest <command>"
         echo ""
@@ -276,16 +276,17 @@ case "\${1:-help}" in
         echo "  logs           Follow container logs"
         echo "  run <account>  Run single cycle (add --dry-run for simulation)"
         echo "  run-all        Run all accounts once (add --dry-run)"
-        echo "  config         Edit data/config.yaml"
+        echo "  config         Edit config (requires running container)"
         echo "  rebuild        Rebuild Docker image without cache"
         echo "  dashboard      Open dashboard in browser"
         echo "  update         Re-run installer to update"
         echo ""
         echo "Dashboard: http://localhost:8501"
-        echo "Install:   \$INSTALL_DIR"
+        echo "Install:   $INSTALL_DIR"
         ;;
 esac
 WRAPPER
+sed -i "s|__INSTALL_DIR__|$INSTALL_DIR|g; s|__VERSION__|$VERSION|g" "$BIN_DIR/invest"
 
 chmod +x "$BIN_DIR/invest"
 echo -e "  ${GREEN}✓${NC} Installed to $BIN_DIR/invest"
