@@ -16,11 +16,15 @@ services:
       INITIAL_BUDGET: ${INITIAL_BUDGET:-10000}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
-      - ./logs:/app/logs
-      - ./data:/app/data
+      - invest_data:/app/data
+      - invest_logs:/app/logs
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
       interval: 30s
       timeout: 10s
       retries: 5
+
+volumes:
+  invest_data:
+  invest_logs:

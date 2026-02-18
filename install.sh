@@ -138,11 +138,8 @@ curl -fsSL "$REPO_RAW/config.yaml"          -o "$INSTALL_DIR/config.yaml"
 
 mkdir -p "$INSTALL_DIR/orchestrator/src" \
          "$INSTALL_DIR/orchestrator/dashboard/pages" \
-         "$INSTALL_DIR/orchestrator/dashboard/components" \
-         "$INSTALL_DIR/logs" \
-         "$INSTALL_DIR/data"
-# Ensure data/ and logs/ are writable by the container regardless of Docker mode
-chmod 777 "$INSTALL_DIR/logs" "$INSTALL_DIR/data"
+         "$INSTALL_DIR/orchestrator/dashboard/components"
+# data/ and logs/ are Docker named volumes — no host dirs needed
 
 curl -fsSL "$REPO_RAW/orchestrator/Dockerfile"        -o "$INSTALL_DIR/orchestrator/Dockerfile"
 curl -fsSL "$REPO_RAW/orchestrator/pyproject.toml"    -o "$INSTALL_DIR/orchestrator/pyproject.toml"
@@ -211,7 +208,6 @@ INSTALL_DIR="$INSTALL_DIR"
 case "\${1:-help}" in
     start)
         echo "Starting orchestrator + dashboard..."
-        chmod 777 "\$INSTALL_DIR/data" "\$INSTALL_DIR/logs" 2>/dev/null || true
         cd "\$INSTALL_DIR" && docker compose up -d
         echo ""
         echo "Dashboard: http://localhost:8501"
@@ -249,11 +245,13 @@ case "\${1:-help}" in
         cd "\$INSTALL_DIR" && docker compose exec orchestrator python -m src.main --all \$@
         ;;
     config)
-        \${EDITOR:-nano} "\$INSTALL_DIR/data/config.yaml"
+        cd "\$INSTALL_DIR" && docker compose exec orchestrator sh -c 'cat /app/data/config.yaml' > /tmp/_invest_cfg.yaml 2>/dev/null || { echo "Container not running. Use: invest start"; exit 1; }
+        \${EDITOR:-nano} /tmp/_invest_cfg.yaml
+        cd "\$INSTALL_DIR" && docker compose exec -T orchestrator sh -c 'cat > /app/data/config.yaml' < /tmp/_invest_cfg.yaml && echo "Config saved."
+        rm -f /tmp/_invest_cfg.yaml
         ;;
     rebuild)
         echo "Rebuilding Docker image (no cache)..."
-        chmod 777 "\$INSTALL_DIR/data" "\$INSTALL_DIR/logs" 2>/dev/null || true
         cd "\$INSTALL_DIR" && docker compose build --no-cache && docker compose up -d
         echo "Rebuilt. Dashboard: http://localhost:8501"
         ;;
