@@ -1,0 +1,240 @@
+"""Audit logger: saves full decision cycle as JSON + maintains SQLite summary."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+
+import structlog
+
+logger = structlog.get_logger()
+
+LOGS_DIR = Path("logs")
+DB_PATH = Path("data/audit.db")
+
+
+class AuditLogger:
+    """Logs every decision cycle with full context for auditability."""
+
+    def __init__(self, logs_dir: Path | str = LOGS_DIR, db_path: Path | str = DB_PATH):
+        self.logs_dir = Path(logs_dir)
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_db()
+
+    def _init_db(self) -> None:
+        """Initialize SQLite summary table."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS decision_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    account_key TEXT NOT NULL,
+                    account_name TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    market_regime TEXT,
+                    portfolio_outlook TEXT,
+                    confidence REAL,
+                    actions_count INTEGER DEFAULT 0,
+                    forced_actions_count INTEGER DEFAULT 0,
+                    rejected_count INTEGER DEFAULT 0,
+                    portfolio_value REAL,
+                    portfolio_pl_pct REAL,
+                    cash REAL,
+                    log_file TEXT,
+                    success INTEGER DEFAULT 1,
+                    error TEXT
+                )
+            """)
+
+    def log_cycle(
+        self,
+        account_key: str,
+        account_name: str,
+        model: str,
+        pass1_messages: list[dict] | None = None,
+        pass1_response: dict | None = None,
+        pass2_messages: list[dict] | None = None,
+        pass2_response: dict | None = None,
+        risk_modifications: list[str] | None = None,
+        risk_warnings: list[str] | None = None,
+        forced_actions: list[dict] | None = None,
+        rejected_actions: list[dict] | None = None,
+        executed_trades: list[dict] | None = None,
+        portfolio_before: dict | None = None,
+        portfolio_after: dict | None = None,
+        error: str | None = None,
+    ) -> str:
+        """Log a full decision cycle.
+
+        Returns the path to the log file.
+        """
+        now = datetime.utcnow()
+        date_str = now.strftime("%Y-%m-%d")
+        time_str = now.strftime("%H%M%S")
+
+        log_entry = {
+            "timestamp": now.isoformat(),
+            "account_key": account_key,
+            "account_name": account_name,
+            "model": model,
+            "pass1": {
+                "messages": pass1_messages,
+                "response": pass1_response,
+            },
+            "pass2": {
+                "messages": pass2_messages,
+                "response": pass2_response,
+            },
+            "risk_manager": {
+                "modifications": risk_modifications or [],
+                "warnings": risk_warnings or [],
+                "forced_actions": forced_actions or [],
+                "rejected_actions": rejected_actions or [],
+            },
+            "executed_trades": executed_trades or [],
+            "portfolio_before": portfolio_before,
+            "portfolio_after": portfolio_after,
+            "error": error,
+        }
+
+        # Write JSON log file
+        log_file = self.logs_dir / f"{date_str}_{account_key}_{time_str}.json"
+        with open(log_file, "w") as f:
+            json.dump(log_entry, f, indent=2, default=str)
+
+        # Write summary to SQLite
+        analysis = pass1_response or {}
+        decision = pass2_response or {}
+        p_before = portfolio_before or {}
+
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    """INSERT INTO decision_log
+                    (timestamp, account_key, account_name, model, market_regime,
+                     portfolio_outlook, confidence, actions_count, forced_actions_count,
+                     rejected_count, portfolio_value, portfolio_pl_pct, cash,
+                     log_file, success, error)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        now.isoformat(),
+                        account_key,
+                        account_name,
+                        model,
+                        analysis.get("market_regime"),
+                        decision.get("portfolio_outlook"),
+                        decision.get("confidence"),
+                        len(decision.get("actions", [])),
+                        len(forced_actions or []),
+                        len(rejected_actions or []),
+                        p_before.get("total_value"),
+                        p_before.get("total_pl_pct"),
+                        p_before.get("cash"),
+                        str(log_file),
+                        0 if error else 1,
+                        error,
+                    ),
+                )
+        except Exception as e:
+            logger.error("audit_db_write_failed", error=str(e))
+
+        logger.info("audit_log_written", file=str(log_file), account=account_key)
+        return str(log_file)
+
+    def get_decision_history(
+        self,
+        account_key: str,
+        limit: int = 4,
+    ) -> list[dict]:
+        """Get recent decision history for prompt injection."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """SELECT timestamp, log_file FROM decision_log
+                    WHERE account_key = ? AND success = 1
+                    ORDER BY timestamp DESC LIMIT ?""",
+                    (account_key, limit),
+                ).fetchall()
+
+            history = []
+            for row in reversed(rows):
+                log_file = row["log_file"]
+                try:
+                    with open(log_file) as f:
+                        entry = json.load(f)
+                    decision = entry.get("pass2", {}).get("response", {})
+                    actions_raw = decision.get("actions", [])
+                    trades = entry.get("executed_trades", [])
+
+                    # Match results to actions
+                    actions = []
+                    for a in actions_raw:
+                        action_data = {
+                            "type": a.get("type"),
+                            "symbol": a.get("symbol"),
+                            "amount_usd": a.get("amount_usd", 0),
+                            "thesis": a.get("thesis", ""),
+                        }
+                        # Find matching trade result
+                        for t in trades:
+                            if (t.get("symbol") == a.get("symbol") and
+                                    t.get("type") == a.get("type")):
+                                action_data["result_pct"] = t.get("result_pct")
+                                break
+                        actions.append(action_data)
+
+                    history.append({
+                        "date": row["timestamp"][:10],
+                        "outlook": decision.get("portfolio_outlook", "Unknown"),
+                        "confidence": decision.get("confidence", "N/A"),
+                        "actions": actions,
+                        "hold_reason": decision.get("reasoning", "")[:100] if not actions else "",
+                    })
+                except (FileNotFoundError, json.JSONDecodeError):
+                    continue
+
+            return history
+        except Exception as e:
+            logger.error("decision_history_fetch_failed", error=str(e))
+            return []
+
+    def get_recent_logs(
+        self,
+        account_key: str | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Get recent log summaries for dashboard display."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                if account_key:
+                    rows = conn.execute(
+                        """SELECT * FROM decision_log
+                        WHERE account_key = ?
+                        ORDER BY timestamp DESC LIMIT ?""",
+                        (account_key, limit),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        """SELECT * FROM decision_log
+                        ORDER BY timestamp DESC LIMIT ?""",
+                        (limit,),
+                    ).fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error("recent_logs_fetch_failed", error=str(e))
+            return []
+
+    def get_log_detail(self, log_file: str) -> dict | None:
+        """Read full log file for detailed view."""
+        try:
+            with open(log_file) as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            logger.error("log_detail_read_failed", file=log_file, error=str(e))
+            return None

@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Data & logs
+logs/*.json
+data/audit.db
+data/*.cache
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+*.log
+
+# Poetry
+poetry.lock
+
+# Claude
+.claude/
