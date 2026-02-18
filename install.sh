@@ -145,6 +145,8 @@ mkdir -p "$INSTALL_DIR/orchestrator/src" \
 curl -fsSL "$REPO_RAW/orchestrator/Dockerfile"        -o "$INSTALL_DIR/orchestrator/Dockerfile"
 curl -fsSL "$REPO_RAW/orchestrator/pyproject.toml"    -o "$INSTALL_DIR/orchestrator/pyproject.toml"
 curl -fsSL "$REPO_RAW/orchestrator/supervisord.conf"  -o "$INSTALL_DIR/orchestrator/supervisord.conf"
+curl -fsSL "$REPO_RAW/orchestrator/entrypoint.sh"     -o "$INSTALL_DIR/orchestrator/entrypoint.sh"
+chmod +x "$INSTALL_DIR/orchestrator/entrypoint.sh"
 curl -fsSL "$REPO_RAW/.dockerignore"                  -o "$INSTALL_DIR/.dockerignore"
 
 # Source modules
@@ -234,11 +236,11 @@ case "\${1:-help}" in
             echo "Accounts:"
             cd "\$INSTALL_DIR" && python3 -c "
 import yaml
-with open('config.yaml') as f:
+with open('data/config.yaml') as f:
     cfg = yaml.safe_load(f)
 for k, v in cfg.get('accounts', {}).items():
     print(f'  {k:25s} {v.get(\"name\",k):20s} model={v.get(\"model\",\"?\")}  cron={v.get(\"cron\",\"?\")}')
-" 2>/dev/null || echo "  (install pyyaml to list accounts, or check config.yaml)"
+" 2>/dev/null || echo "  (check data/config.yaml)"
             exit 1
         fi
         shift
@@ -249,7 +251,12 @@ for k, v in cfg.get('accounts', {}).items():
         cd "\$INSTALL_DIR" && docker compose exec orchestrator python -m src.main --all \$@
         ;;
     config)
-        \${EDITOR:-nano} "\$INSTALL_DIR/config.yaml"
+        \${EDITOR:-nano} "\$INSTALL_DIR/data/config.yaml"
+        ;;
+    rebuild)
+        echo "Rebuilding Docker image (no cache)..."
+        cd "\$INSTALL_DIR" && docker compose build --no-cache && docker compose up -d
+        echo "Rebuilt. Dashboard: http://localhost:8501"
         ;;
     dashboard)
         echo "Dashboard: http://localhost:8501"
@@ -272,7 +279,8 @@ for k, v in cfg.get('accounts', {}).items():
         echo "  logs           Follow container logs"
         echo "  run <account>  Run single cycle (add --dry-run for simulation)"
         echo "  run-all        Run all accounts once (add --dry-run)"
-        echo "  config         Edit config.yaml"
+        echo "  config         Edit data/config.yaml"
+        echo "  rebuild        Rebuild Docker image without cache"
         echo "  dashboard      Open dashboard in browser"
         echo "  update         Re-run installer to update"
         echo ""
@@ -312,5 +320,5 @@ echo "  invest run-all --dry-run   # Test all accounts (no real trades)"
 echo "  invest dashboard     # Open web dashboard"
 echo ""
 echo "Dashboard: http://localhost:8501"
-echo "Config:    $INSTALL_DIR/config.yaml"
+echo "Config:    $INSTALL_DIR/data/config.yaml"
 echo ""
