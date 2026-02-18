@@ -145,7 +145,7 @@ mkdir -p "$INSTALL_DIR/orchestrator/src" \
 curl -fsSL "$REPO_RAW/orchestrator/Dockerfile"        -o "$INSTALL_DIR/orchestrator/Dockerfile"
 curl -fsSL "$REPO_RAW/orchestrator/pyproject.toml"    -o "$INSTALL_DIR/orchestrator/pyproject.toml"
 curl -fsSL "$REPO_RAW/orchestrator/supervisord.conf"  -o "$INSTALL_DIR/orchestrator/supervisord.conf"
-curl -fsSL "$REPO_RAW/orchestrator/.dockerignore"     -o "$INSTALL_DIR/orchestrator/.dockerignore"
+curl -fsSL "$REPO_RAW/.dockerignore"                  -o "$INSTALL_DIR/.dockerignore"
 
 # Source modules
 for f in __init__ main ghostfolio_client llm_client market_data technical_indicators \

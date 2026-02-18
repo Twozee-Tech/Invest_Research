@@ -4,7 +4,9 @@ services:
   # Both services are already running - orchestrator just connects to them.
 
   orchestrator:
-    build: ./orchestrator
+    build:
+      context: .
+      dockerfile: orchestrator/Dockerfile
     ports:
       - "8501:8501"    # Streamlit dashboard
     environment:

@@ -1,0 +1,12 @@
+orchestrator/.venv/
+orchestrator/__pycache__/
+orchestrator/**/__pycache__/
+orchestrator/**/*.pyc
+orchestrator/.pytest_cache/
+orchestrator/tests/
+orchestrator/.mypy_cache/
+logs/
+data/
+.env
+.git/
+.claude/

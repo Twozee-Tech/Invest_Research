@@ -13,11 +13,12 @@ from dashboard.components.charts import render_performance_chart
 
 
 def load_config():
-    config_path = Path("config.yaml")
-    if config_path.exists():
+    try:
+        config_path = Path("config.yaml")
         with open(config_path) as f:
             return yaml.safe_load(f)
-    return {"accounts": {}}
+    except (OSError, FileNotFoundError):
+        return {"accounts": {}}
 
 
 st.title("AI Investment Orchestrator")

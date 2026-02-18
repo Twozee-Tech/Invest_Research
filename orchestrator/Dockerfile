@@ -9,12 +9,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --no-cache-dir poetry && \
     poetry config virtualenvs.create false
 
-COPY pyproject.toml poetry.lock* ./
+COPY orchestrator/pyproject.toml orchestrator/poetry.lock* ./
 RUN poetry install --no-interaction --no-ansi --only main --no-root
 
-COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
-COPY src/ ./src/
-COPY dashboard/ ./dashboard/
+COPY orchestrator/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+COPY orchestrator/src/ ./src/
+COPY orchestrator/dashboard/ ./dashboard/
+
+# Bake in default config (volume mount in docker-compose overrides at runtime)
+COPY config.yaml ./config.yaml
 
 EXPOSE 8501
 

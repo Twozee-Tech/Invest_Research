@@ -42,10 +42,11 @@ SCHEDULE_PRESETS = {
 
 
 def load_config():
-    if CONFIG_PATH.exists():
+    try:
         with open(CONFIG_PATH) as f:
             return yaml.safe_load(f)
-    return {"defaults": {"initial_budget": 10000, "currency": "USD"}, "accounts": {}}
+    except (OSError, FileNotFoundError):
+        return {"defaults": {"initial_budget": 10000, "currency": "USD"}, "accounts": {}}
 
 
 def save_config(config):

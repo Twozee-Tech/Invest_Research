@@ -12,10 +12,11 @@ CONFIG_PATH = Path("config.yaml")
 
 
 def load_config():
-    if CONFIG_PATH.exists():
+    try:
         with open(CONFIG_PATH) as f:
             return yaml.safe_load(f)
-    return {}
+    except (OSError, FileNotFoundError):
+        return {}
 
 
 def save_config(config):
