@@ -63,13 +63,23 @@ class AccountManager:
         for key, acct in accounts.items():
             gf_id = acct.get("ghostfolio_account_id", "TBD")
             name = acct.get("name", key)
+            currency = self.config.get("defaults", {}).get("currency", "USD")
 
             if gf_id and gf_id != "TBD":
-                # Verify it exists
+                # Verify it exists and sync name
                 try:
-                    self.client.get_account(gf_id)
+                    existing = self.client.get_account(gf_id)
                     result[key] = gf_id
-                    logger.info("account_verified", key=key, ghostfolio_id=gf_id)
+                    # Rename if name differs
+                    existing_name = existing.get("name", "") if isinstance(existing, dict) else ""
+                    if existing_name and existing_name != name:
+                        try:
+                            self.client.update_account(gf_id, name=name)
+                            logger.info("account_renamed", key=key, old=existing_name, new=name)
+                        except Exception as re:
+                            logger.warning("account_rename_failed", key=key, error=str(re))
+                    else:
+                        logger.info("account_verified", key=key, ghostfolio_id=gf_id)
                     continue
                 except Exception:
                     logger.warning("account_not_found_in_ghostfolio", key=key, id=gf_id)
@@ -79,7 +89,7 @@ class AccountManager:
                 new_account = self.client.create_account(
                     name=name,
                     balance=initial_budget,
-                    currency=self.config.get("defaults", {}).get("currency", "USD"),
+                    currency=currency,
                 )
                 new_id = new_account["id"]
                 accounts[key]["ghostfolio_account_id"] = new_id

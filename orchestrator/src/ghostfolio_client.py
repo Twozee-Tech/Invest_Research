@@ -67,6 +67,23 @@ class GhostfolioClient:
     def get_account(self, account_id: str) -> dict:
         return self._request("GET", f"/api/v1/account/{account_id}")
 
+    def update_account(
+        self,
+        account_id: str,
+        name: str | None = None,
+        balance: float | None = None,
+        currency: str | None = None,
+    ) -> dict:
+        """Update an existing account's fields."""
+        payload: dict = {}
+        if name is not None:
+            payload["name"] = name
+        if balance is not None:
+            payload["balance"] = balance
+        if currency is not None:
+            payload["currency"] = currency
+        return self._request("PATCH", f"/api/v1/account/{account_id}", json=payload)
+
     def create_account(
         self,
         name: str,
