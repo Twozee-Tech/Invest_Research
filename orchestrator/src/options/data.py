@@ -1,0 +1,181 @@
+"""Fetch option chains from yfinance, filter by DTE and liquidity."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
+
+import pandas as pd
+import structlog
+import yfinance as yf
+
+logger = structlog.get_logger()
+
+# Liquidity minimums
+MIN_OPEN_INTEREST = 50
+MIN_BID = 0.05
+MIN_VOLUME = 5
+
+
+@dataclass
+class OptionChainData:
+    symbol: str
+    underlying_price: float
+    expiration: str          # YYYY-MM-DD
+    dte: int                 # days to expiration
+    calls: pd.DataFrame      # filtered, liquid calls
+    puts: pd.DataFrame       # filtered, liquid puts
+
+
+def get_option_chain(
+    symbol: str,
+    min_dte: int = 14,
+    max_dte: int = 75,
+) -> OptionChainData | None:
+    """Fetch and filter option chain for the closest expiry within DTE range.
+
+    Returns the expiry closest to 30-45 DTE within [min_dte, max_dte].
+    Returns None if no suitable chain found.
+    """
+    try:
+        ticker = yf.Ticker(symbol)
+
+        # Current underlying price
+        fast = ticker.fast_info
+        underlying_price = float(getattr(fast, "last_price", 0) or 0)
+        if underlying_price <= 0:
+            logger.warning("options_no_price", symbol=symbol)
+            return None
+
+        # Available expirations
+        expirations = ticker.options
+        if not expirations:
+            logger.warning("options_no_expirations", symbol=symbol)
+            return None
+
+        today = date.today()
+        target_dte = 35  # ideal DTE
+
+        # Score each expiry by distance from target
+        candidates = []
+        for exp_str in expirations:
+            exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
+            dte = (exp_date - today).days
+            if min_dte <= dte <= max_dte:
+                candidates.append((abs(dte - target_dte), dte, exp_str))
+
+        if not candidates:
+            logger.warning("options_no_expiry_in_range", symbol=symbol, min_dte=min_dte, max_dte=max_dte)
+            return None
+
+        candidates.sort()
+        _, dte, expiration = candidates[0]
+
+        # Fetch chain
+        chain = ticker.option_chain(expiration)
+
+        calls = _filter_chain(chain.calls, underlying_price)
+        puts = _filter_chain(chain.puts, underlying_price)
+
+        if calls.empty and puts.empty:
+            logger.warning("options_chain_illiquid", symbol=symbol, expiration=expiration)
+            return None
+
+        logger.info(
+            "options_chain_fetched",
+            symbol=symbol,
+            expiration=expiration,
+            dte=dte,
+            calls=len(calls),
+            puts=len(puts),
+        )
+        return OptionChainData(
+            symbol=symbol,
+            underlying_price=underlying_price,
+            expiration=expiration,
+            dte=dte,
+            calls=calls,
+            puts=puts,
+        )
+
+    except Exception as e:
+        logger.error("options_chain_fetch_failed", symbol=symbol, error=str(e))
+        return None
+
+
+def _filter_chain(df: pd.DataFrame, underlying_price: float) -> pd.DataFrame:
+    """Filter option chain for liquid strikes near the money."""
+    if df.empty:
+        return df
+
+    # Keep strikes within ±30% of underlying
+    lo = underlying_price * 0.70
+    hi = underlying_price * 1.30
+    df = df[(df["strike"] >= lo) & (df["strike"] <= hi)].copy()
+
+    # Liquidity filters
+    if "openInterest" in df.columns:
+        df = df[df["openInterest"] >= MIN_OPEN_INTEREST]
+    if "bid" in df.columns:
+        df = df[df["bid"] >= MIN_BID]
+    if "volume" in df.columns:
+        df = df[df["volume"].fillna(0) >= MIN_VOLUME]
+
+    return df.reset_index(drop=True)
+
+
+def get_iv_percentile(symbol: str, lookback_days: int = 252) -> float | None:
+    """Estimate IV percentile using historical close-to-close volatility.
+
+    Returns a value 0-100: 100 = IV at historical maximum.
+    Uses realized vol as proxy for implied vol if no options data available.
+    """
+    try:
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period="2y", interval="1d")
+        if hist.empty or len(hist) < 30:
+            return None
+
+        closes = hist["Close"].dropna()
+        log_returns = (closes / closes.shift(1)).apply(lambda x: x.__class__(x) if x > 0 else None).dropna()
+
+        # Rolling 21-day realized vol (annualized)
+        import numpy as np
+        log_rets = np.log(closes / closes.shift(1)).dropna()
+        rolling_vol = log_rets.rolling(21).std() * (252 ** 0.5)
+        rolling_vol = rolling_vol.dropna()
+
+        if len(rolling_vol) < 10:
+            return None
+
+        current_vol = rolling_vol.iloc[-1]
+        percentile = float((rolling_vol <= current_vol).mean() * 100)
+        return round(percentile, 1)
+
+    except Exception as e:
+        logger.error("iv_percentile_failed", symbol=symbol, error=str(e))
+        return None
+
+
+def get_current_option_price(
+    symbol: str,
+    option_type: str,   # "call" or "put"
+    strike: float,
+    expiration: str,    # YYYY-MM-DD
+) -> float | None:
+    """Fetch mid-price (bid+ask)/2 for a specific option contract."""
+    try:
+        ticker = yf.Ticker(symbol)
+        chain = ticker.option_chain(expiration)
+        df = chain.calls if option_type == "call" else chain.puts
+        row = df[df["strike"] == strike]
+        if row.empty:
+            return None
+        bid = float(row["bid"].iloc[0])
+        ask = float(row["ask"].iloc[0])
+        if bid <= 0 and ask <= 0:
+            return float(row["lastPrice"].iloc[0])
+        return round((bid + ask) / 2, 2)
+    except Exception as e:
+        logger.error("option_price_fetch_failed", symbol=symbol, strike=strike, error=str(e))
+        return None

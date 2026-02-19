@@ -21,6 +21,8 @@ feedparser = "^6.0"
 pyyaml = "^6.0"
 streamlit = "^1.40"
 plotly = "^5.24"
+py_vollib = "^1.0"
+scipy = "^1.13"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3"

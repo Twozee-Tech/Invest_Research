@@ -107,3 +107,33 @@ accounts:
       - PLTR
       - SOFI
       - MARA
+
+  options_spreads:
+    name: "Options Spreads"
+    ghostfolio_account_id: "TBD"
+    model: "Qwen3-Next"
+    fallback_model: "Nemotron"
+    cron: "0 18 * * 5"
+    strategy: "vertical_spreads"
+    strategy_description: "Vertical Spreads: bull call / bear put, target delta 0.30, DTE 30-45"
+    prompt_style: "Analyze market direction and IV regime. Decide which positions to open, close, or roll based on Greeks and P&L."
+    preferred_metrics: ["IV", "Delta", "Theta", "RSI", "Trend"]
+    horizon: "weeks (DTE 30-45)"
+    risk_profile:
+      max_portfolio_delta_pct: 15
+      min_cash_pct: 40
+      max_open_spreads: 5
+      max_allocation_per_spread_pct: 10
+      min_new_position_dte: 21
+      auto_close_dte: 7
+      take_profit_pct: 75
+      stop_loss_pct: 50
+    watchlist:
+      - SPY
+      - QQQ
+      - AAPL
+      - NVDA
+      - MSFT
+      - AMZN
+      - META
+      - TSLA

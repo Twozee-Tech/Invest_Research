@@ -18,5 +18,7 @@ audit_logs = st.Page("pages/audit_logs.py", title="Audit Logs", icon="📋")
 account_mgmt = st.Page("pages/account_management.py", title="Account Management", icon="⚙️")
 settings = st.Page("pages/settings.py", title="Settings", icon="🔧")
 
-pg = st.navigation([overview, account_detail, run_control, model_compare, audit_logs, account_mgmt, settings])
+options_positions = st.Page("pages/options_positions.py", title="Options Spreads", icon="📈")
+
+pg = st.navigation([overview, account_detail, run_control, options_positions, model_compare, audit_logs, account_mgmt, settings])
 pg.run()

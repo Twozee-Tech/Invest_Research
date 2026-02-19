@@ -99,6 +99,7 @@ class GhostfolioClient:
         date: datetime | None = None,
         fee: float = 0,
         data_source: str = "YAHOO",
+        comment: str | None = None,
     ) -> dict:
         if date is None:
             date = datetime.now(timezone.utc)
@@ -113,6 +114,8 @@ class GhostfolioClient:
             "type": order_type,
             "unitPrice": unit_price,
         }
+        if comment:
+            payload["comment"] = comment
         result = self._request("POST", "/api/v1/order", json=payload)
         logger.info(
             "ghostfolio_order_created",

@@ -26,7 +26,7 @@ class AuditLogger:
         self._init_db()
 
     def _init_db(self) -> None:
-        """Initialize SQLite summary table."""
+        """Initialize SQLite summary table and options positions table."""
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS decision_log (
@@ -47,6 +47,40 @@ class AuditLogger:
                     log_file TEXT,
                     success INTEGER DEFAULT 1,
                     error TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS options_positions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_key TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    spread_type TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    contracts INTEGER NOT NULL,
+                    expiration_date TEXT NOT NULL,
+                    buy_strike REAL NOT NULL,
+                    buy_option_type TEXT NOT NULL,
+                    buy_premium REAL NOT NULL,
+                    buy_contract_symbol TEXT,
+                    sell_strike REAL NOT NULL,
+                    sell_option_type TEXT NOT NULL,
+                    sell_premium REAL NOT NULL,
+                    sell_contract_symbol TEXT,
+                    max_profit REAL NOT NULL,
+                    max_loss REAL NOT NULL,
+                    entry_debit REAL NOT NULL,
+                    entry_date TEXT NOT NULL,
+                    current_value REAL,
+                    current_pl REAL,
+                    current_greeks TEXT,
+                    dte INTEGER,
+                    close_date TEXT,
+                    close_value REAL,
+                    realized_pl REAL,
+                    close_reason TEXT,
+                    ghostfolio_open_order_id TEXT,
+                    ghostfolio_close_order_id TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             """)
 
