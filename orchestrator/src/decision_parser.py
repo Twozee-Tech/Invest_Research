@@ -131,7 +131,10 @@ class TradeAction(BaseModel):
     amount_usd: float
     urgency: str = "MEDIUM"
     thesis: str = ""
-    exit_condition: str = ""
+    stop_loss_pct: float | None = None    # e.g. -15.0 → exit if down 15% from entry
+    take_profit_pct: float | None = None  # e.g. 25.0 → exit if up 25% from entry
+    time_stop_days: int | None = None     # e.g. 30 → reassess after 30 days
+    exit_condition: str = ""              # Legacy free-text (kept for backward compat)
 
     @field_validator("type")
     @classmethod

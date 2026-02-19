@@ -95,7 +95,18 @@ def build_options_pass2_messages(
         "or which new spreads to OPEN. "
         "You decide the direction and spread type — the system will pick exact strikes. "
         "You do NOT pick strikes or expiration dates. "
-        "Output valid JSON only, no markdown."
+        "Output valid JSON only, no markdown.\n\n"
+        "SPREAD TYPE REFERENCE:\n"
+        "CREDIT SPREADS (collect premium, theta positive — use when IV > 70th percentile):\n"
+        "  BULL_PUT: sell higher-strike put, buy lower-strike put (bullish/neutral bias)\n"
+        "  BEAR_CALL: sell lower-strike call, buy higher-strike call (bearish/neutral bias)\n"
+        "DEBIT SPREADS (pay premium, directional — use when IV < 30th percentile):\n"
+        "  BULL_CALL: buy lower-strike call, sell higher-strike call (bullish bias)\n"
+        "  BEAR_PUT: buy higher-strike put, sell lower-strike put (bearish bias)\n"
+        "Rule: IV > 70th pct → prefer CREDIT spreads (sell premium).\n"
+        "      IV < 30th pct → prefer DEBIT spreads (directional).\n"
+        "      IV 30-70th pct → choose based on directional conviction.\n"
+        "CRITICAL: Match spread_type to direction — BULL_* = bullish, BEAR_* = bearish."
     )
 
     user = f"""== STRATEGY: {strategy_desc} ==
@@ -220,9 +231,13 @@ def _format_market_with_iv(
         tech_str = ""
         if sig:
             summary = sig.to_summary() if hasattr(sig, "to_summary") else {}
-            rsi = summary.get("rsi", {}).get("value", "N/A")
-            trend = summary.get("sma", {}).get("trend", "?")
-            tech_str = f"RSI:{rsi} Trend:{trend}"
+            rsi = summary.get("RSI14", "N/A")
+            macd_hist = summary.get("MACD_hist")
+            interp = summary.get("interpretation", "")
+            macd_str = f"{macd_hist:+.4f}" if macd_hist is not None else "N/A"
+            tech_str = f"RSI:{rsi} MACDhist:{macd_str}"
+            if interp:
+                tech_str += f" | {interp}"
 
         lines.append(f"  {sym}: ${price:.2f} ({chg:+.2f}%) {iv_str} | {tech_str}")
     return "\n".join(lines) if lines else "(no data)"

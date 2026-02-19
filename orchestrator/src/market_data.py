@@ -121,6 +121,43 @@ class MarketDataProvider:
         fast = ticker.fast_info
         return fast.get("lastPrice", 0) or 0
 
+    def get_upcoming_earnings(self, symbols: list[str], days: int = 14) -> dict[str, str]:
+        """Get upcoming earnings dates within the next N days."""
+        from datetime import date, timedelta
+        cutoff = date.today() + timedelta(days=days)
+        result = {}
+        for symbol in symbols:
+            try:
+                ticker = yf.Ticker(symbol)
+                cal = ticker.calendar
+                if not isinstance(cal, dict):
+                    continue
+                dates_raw = cal.get("Earnings Date", [])
+                if not isinstance(dates_raw, list):
+                    dates_raw = [dates_raw]
+                for ed in dates_raw:
+                    try:
+                        ed_date = ed.date() if hasattr(ed, "date") else ed
+                        if isinstance(ed_date, date) and date.today() <= ed_date <= cutoff:
+                            days_away = (ed_date - date.today()).days
+                            result[symbol] = f"{ed_date} (in {days_away} days)"
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+        return result
+
+    def format_upcoming_earnings(self, symbols: list[str], days: int = 14) -> str:
+        """Format upcoming earnings for prompt injection."""
+        earnings = self.get_upcoming_earnings(symbols, days)
+        if not earnings:
+            return ""
+        lines = [f"== UPCOMING EARNINGS (next {days} days) =="]
+        for sym, info in sorted(earnings.items()):
+            lines.append(f"  {sym}: {info}")
+        return "\n".join(lines)
+
     def validate_symbol(self, symbol: str) -> bool:
         """Check if a symbol is valid and tradeable."""
         try:

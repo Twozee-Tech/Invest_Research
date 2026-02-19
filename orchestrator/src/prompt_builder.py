@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from .portfolio_state import PortfolioState
 from .technical_indicators import TechnicalSignals
 
@@ -13,6 +15,7 @@ def build_pass1_messages(
     news_text: str,
     decision_history: str,
     strategy_config: dict,
+    earnings_text: str = "",
 ) -> list[dict[str, str]]:
     """Build messages for Pass 1: Market Analysis.
 
@@ -46,20 +49,36 @@ def build_pass1_messages(
         "}\n"
     )
 
-    # Build market data section
+    # Build market data section (includes VIX/TNX if passed from main.py)
     market_lines = ["== MARKET DATA =="]
     for symbol, data in market_data.items():
         if isinstance(data, dict):
             price = data.get("price", "N/A")
-            market_lines.append(f"{symbol}: price=${price}")
+            chg = data.get("change_pct", 0)
+            chg_str = f" ({chg:+.2f}%)" if isinstance(chg, (int, float)) and chg != 0 else ""
+            label = data.get("label", "")
+            label_str = f" [{label}]" if label else ""
+            extras = []
+            pe = data.get("pe")
+            div = data.get("div_yield")
+            if pe:
+                extras.append(f"P/E:{pe:.1f}")
+            if div:
+                extras.append(f"Yield:{div*100:.1f}%")
+            extras_str = f" | {', '.join(extras)}" if extras else ""
+            market_lines.append(f"{symbol}{label_str}: ${price}{chg_str}{extras_str}")
     market_text = "\n".join(market_lines)
 
     # Build technical indicators section
     tech_lines = ["== TECHNICAL INDICATORS =="]
     for symbol, signals in technical_signals.items():
         summary = signals.to_summary()
+        interp = summary.pop("interpretation", "")
         parts = [f"{k}={v}" for k, v in summary.items()]
-        tech_lines.append(f"{symbol}: {', '.join(parts)}")
+        line = f"{symbol}: {', '.join(parts)}"
+        if interp:
+            line += f" | {interp}"
+        tech_lines.append(line)
     tech_text = "\n".join(tech_lines)
 
     # Strategy context
@@ -71,15 +90,29 @@ def build_pass1_messages(
         f"Preferred metrics: {', '.join(strategy_config.get('preferred_metrics', []))}\n"
     )
 
-    user_prompt = (
-        f"{portfolio.to_prompt_text()}\n\n"
-        f"{market_text}\n\n"
-        f"{tech_text}\n\n"
-        f"{news_text}\n\n"
-        f"{decision_history}\n\n"
-        f"{strategy_text}\n\n"
-        "Analyze the current situation and respond with the JSON analysis."
-    )
+    today = datetime.now().strftime("%A %Y-%m-%d")
+    user_parts = [
+        f"== TODAY: {today} ==",
+        "",
+        portfolio.to_prompt_text(),
+        "",
+        market_text,
+        "",
+        tech_text,
+        "",
+        news_text,
+    ]
+    if earnings_text:
+        user_parts += ["", earnings_text]
+    user_parts += [
+        "",
+        decision_history,
+        "",
+        strategy_text,
+        "",
+        "Analyze the current situation and respond with the JSON analysis.",
+    ]
+    user_prompt = "\n".join(user_parts)
 
     return [
         {"role": "system", "content": system_prompt},
@@ -108,21 +141,42 @@ def build_pass2_messages(
     stop_loss_pct = risk_profile.get("stop_loss_pct", -15)
     watchlist = strategy_config.get("watchlist", [])
 
+    max_position_usd = portfolio.total_value * max_position_pct / 100
+
     system_prompt = (
         f"You are a portfolio manager executing a {strategy} strategy.\n"
         f"Style: {prompt_style}\n"
         f"Investment horizon: {horizon}\n\n"
         "Based on the market analysis below, decide specific trades.\n\n"
-        "RULES:\n"
+        "POSITION SIZING RULES:\n"
         f"- Maximum {max_trades} trades per cycle\n"
-        f"- No single position > {max_position_pct}% of portfolio\n"
+        f"- No single position > {max_position_pct}% of portfolio "
+        f"(= ${max_position_usd:,.0f} at current portfolio value).\n"
+        f"  Before each BUY: existing_position_value + amount_usd MUST NOT exceed ${max_position_usd:,.0f}.\n"
         f"- Keep minimum {min_cash_pct}% cash reserve\n"
-        f"- Stop-loss at {stop_loss_pct}% per position\n"
         f"- Only trade symbols from the watchlist: {', '.join(watchlist)}\n"
         "- You MUST justify every action with a specific thesis\n"
-        "- Consider position sizing carefully\n"
         "- If no good opportunities exist, it's OK to HOLD (empty actions list)\n\n"
-        "You MUST respond with valid JSON matching this schema:\n"
+        "EXIT CRITERIA — use percentage-based fields, NOT absolute price levels:\n"
+        f"  stop_loss_pct: percentage below entry to stop out (e.g. {stop_loss_pct} means exit if down {abs(stop_loss_pct)}%)\n"
+        "  take_profit_pct: percentage above entry to take profits (e.g. 25.0 means exit if up 25%)\n"
+        "  time_stop_days: days after which to reassess the position (e.g. 30)\n"
+        "  DO NOT use historical price levels or absolute dollar targets.\n"
+        "  All exit levels are computed by the system from entry price + percentage.\n"
+    )
+
+    # Add strategy-specific rules
+    if strategy == "value_investing":
+        system_prompt += (
+            "\nVALUE INVESTING DISCIPLINE:\n"
+            "- Only buy if you can cite at least one fundamental metric "
+            "(P/E, P/B, dividend yield, or FCF yield).\n"
+            "- RSI/MACD alone is NOT sufficient justification for a value trade.\n"
+            "- Do NOT buy if RSI > 70 (overbought) without an extraordinary fundamental discount.\n"
+        )
+
+    system_prompt += (
+        "\nYou MUST respond with valid JSON matching this schema:\n"
         "{\n"
         '  "reasoning": "Detailed chain of thought explaining your overall approach",\n'
         '  "actions": [\n'
@@ -132,7 +186,9 @@ def build_pass2_messages(
         '      "amount_usd": 1000,\n'
         '      "urgency": "HIGH" | "MEDIUM" | "LOW",\n'
         '      "thesis": "Why this trade makes sense given the analysis",\n'
-        '      "exit_condition": "When to exit this position"\n'
+        '      "stop_loss_pct": -15.0,\n'
+        '      "take_profit_pct": 25.0,\n'
+        '      "time_stop_days": 30\n'
         "    }\n"
         "  ],\n"
         '  "portfolio_outlook": "BULLISH" | "CAUTIOUSLY_BULLISH" | "NEUTRAL" | "CAUTIOUSLY_BEARISH" | "BEARISH",\n'
@@ -141,13 +197,16 @@ def build_pass2_messages(
         "}\n"
     )
 
+    today = datetime.now().strftime("%A %Y-%m-%d")
     user_prompt = (
+        f"== TODAY: {today} ==\n\n"
         f"== MARKET ANALYSIS (from senior analyst) ==\n"
         f"{json.dumps(analysis_json, indent=2)}\n\n"
         f"{portfolio.to_prompt_text()}\n\n"
         f"Available cash for new BUYs: ${portfolio.cash:,.2f}\n"
         f"Minimum cash to maintain: ${portfolio.total_value * min_cash_pct / 100:,.2f}\n"
-        f"Maximum investable: ${max(0, portfolio.cash - portfolio.total_value * min_cash_pct / 100):,.2f}\n\n"
+        f"Maximum investable: ${max(0, portfolio.cash - portfolio.total_value * min_cash_pct / 100):,.2f}\n"
+        f"Max position size: ${max_position_usd:,.0f} ({max_position_pct}% of portfolio)\n\n"
         f"Decide your trades and respond with the JSON decision."
     )
 
@@ -182,7 +241,7 @@ def format_decision_history(history: list[dict], max_entries: int = 4) -> str:
                     f"{result_str}"
                 )
         else:
-            lines.append(f"  HOLD (no trades)")
+            lines.append("  HOLD (no trades)")
             reason = entry.get("hold_reason", "")
             if reason:
                 lines.append(f"  Reason: \"{reason}\"")

@@ -17,6 +17,17 @@ MIN_PRICE = 5.0
 MIN_AVG_DAILY_VOLUME_USD = 100_000
 MAX_PORTFOLIO_DRAWDOWN_PCT = -20.0
 
+# Pairs of highly correlated assets (buying both in same cycle is redundant)
+CORRELATED_PAIRS = [
+    {"VTI", "VOO"},
+    {"SPY", "VOO"},
+    {"SPY", "VTI"},
+    {"QQQ", "TQQQ"},
+    {"SOXL", "NVDA"},
+    {"MARA", "COIN"},
+    {"IWM", "VB"},
+]
+
 
 @dataclass
 class RiskCheckResult:
@@ -84,6 +95,24 @@ class RiskManager:
             forced_reduce = self._force_reduce_exposure(portfolio, 0.5)
             result.forced_actions.extend(forced_reduce)
 
+        # Bootstrap mode: if mostly cash, allow more trades to deploy capital faster
+        effective_max_trades = self.max_trades_per_cycle
+        if portfolio.cash_pct > 80:
+            effective_max_trades = min(self.max_trades_per_cycle * 2, 10)
+            result.warnings.append(
+                f"BOOTSTRAP MODE: cash={portfolio.cash_pct:.0f}% > 80% — "
+                f"allowing up to {effective_max_trades} trades this cycle"
+            )
+
+        # Correlation check: warn if buying highly correlated assets simultaneously
+        buy_symbols = {a.symbol for a in decision.actions if a.type == "BUY"}
+        for pair in CORRELATED_PAIRS:
+            if pair.issubset(buy_symbols):
+                result.warnings.append(
+                    f"CORRELATION: {' + '.join(sorted(pair))} are highly correlated (~0.99). "
+                    f"Consider choosing just one to avoid redundant exposure."
+                )
+
         # 3. Validate each model action
         validated = []
         for action in decision.actions:
@@ -101,7 +130,7 @@ class RiskManager:
         urgency_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
         validated.sort(key=lambda c: urgency_order.get(c.action.urgency, 1))
 
-        for check in validated[:self.max_trades_per_cycle]:
+        for check in validated[:effective_max_trades]:
             result.approved_actions.append(check.action)
             if check.modified:
                 result.modifications.append(
@@ -110,9 +139,9 @@ class RiskManager:
                     f"({check.modification_reason})"
                 )
 
-        for check in validated[self.max_trades_per_cycle:]:
+        for check in validated[effective_max_trades:]:
             check.approved = False
-            check.rejection_reason = f"Exceeds max {self.max_trades_per_cycle} trades/cycle"
+            check.rejection_reason = f"Exceeds max {effective_max_trades} trades/cycle"
             result.rejected_actions.append(check)
             result.modifications.append(
                 f"REJECTED {check.action.type} {check.action.symbol}: max trades exceeded"

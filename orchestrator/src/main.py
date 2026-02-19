@@ -138,9 +138,25 @@ class Orchestrator:
                 except Exception as e:
                     logger.warning("indicators_failed", symbol=sym, error=str(e))
 
+            # Add VIX and 10Y yield as market context for equity accounts
+            try:
+                overview = self.market_data.get_market_overview()
+                for sym, data in overview.items():
+                    if sym not in market_data:  # don't override watchlist symbols
+                        market_data[sym] = data
+            except Exception as e:
+                logger.warning("market_overview_fetch_failed", error=str(e))
+
             # News
             news_items = self.news.fetch_relevant_news(watchlist, max_items=10)
             news_text = self.news.format_for_prompt(news_items)
+
+            # Upcoming earnings calendar
+            earnings_text = ""
+            try:
+                earnings_text = self.market_data.format_upcoming_earnings(watchlist)
+            except Exception as e:
+                logger.warning("earnings_fetch_failed", error=str(e))
 
             # Decision history
             history = self.audit.get_decision_history(account_key, limit=4)
@@ -156,6 +172,7 @@ class Orchestrator:
                 news_text=news_text,
                 decision_history=history_text,
                 strategy_config=acct,
+                earnings_text=earnings_text,
             )
 
             analysis_raw = self.llm.chat_json(
