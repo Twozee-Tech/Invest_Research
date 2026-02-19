@@ -157,7 +157,7 @@ done
 
 # Options spreads subpackage
 mkdir -p "$INSTALL_DIR/orchestrator/src/options"
-for f in __init__ prompt_builder decision_parser executor positions greeks data risk_manager; do
+for f in __init__ prompt_builder decision_parser executor positions greeks data risk_manager selector; do
     curl -fsSL "$REPO_RAW/orchestrator/src/options/${f}.py" -o "$INSTALL_DIR/orchestrator/src/options/${f}.py"
 done
 
