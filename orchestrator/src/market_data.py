@@ -102,10 +102,15 @@ class MarketDataProvider:
         symbol: str,
         period: str = "6mo",
         interval: str = "1d",
+        start: str | None = None,
+        end: str | None = None,
     ) -> pd.DataFrame:
         """Get historical OHLCV data."""
         ticker = yf.Ticker(symbol)
-        df = ticker.history(period=period, interval=interval)
+        if start and end:
+            df = ticker.history(start=start, end=end, interval=interval)
+        else:
+            df = ticker.history(period=period, interval=interval)
         if df.empty:
             logger.warning("market_data_empty_history", symbol=symbol, period=period)
         return df

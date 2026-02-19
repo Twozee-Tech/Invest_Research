@@ -42,13 +42,14 @@ class RiskManagerResult:
 class RiskManager:
     """Validates trade decisions against account-specific risk rules."""
 
-    def __init__(self, risk_profile: dict):
+    def __init__(self, risk_profile: dict, sim_date: str | None = None):
         self.max_position_pct = risk_profile.get("max_position_pct", 20)
         self.min_cash_pct = risk_profile.get("min_cash_pct", 10)
         self.max_trades_per_cycle = risk_profile.get("max_trades_per_cycle", 5)
         self.stop_loss_pct = risk_profile.get("stop_loss_pct", -15)
         self.min_holding_days = risk_profile.get("min_holding_days", 14)
         self.max_sector_exposure_pct = risk_profile.get("max_sector_exposure_pct", 40)
+        self._sim_date = sim_date  # None = use datetime.now()
 
     def validate(
         self,
@@ -254,7 +255,12 @@ class RiskManager:
         if position.first_buy_date and self.min_holding_days > 0:
             try:
                 buy_date = datetime.fromisoformat(position.first_buy_date.replace("Z", "+00:00"))
-                days_held = (datetime.now(buy_date.tzinfo) - buy_date).days
+                if self._sim_date:
+                    # Backtest: compare dates as naive to avoid timezone issues
+                    now = datetime.fromisoformat(self._sim_date.split("T")[0])
+                    days_held = (now - buy_date.replace(tzinfo=None)).days
+                else:
+                    days_held = (datetime.now(buy_date.tzinfo) - buy_date).days
                 if days_held < self.min_holding_days:
                     check.approved = False
                     check.rejection_reason = (

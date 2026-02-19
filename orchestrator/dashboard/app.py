@@ -19,6 +19,7 @@ account_mgmt = st.Page("pages/account_management.py", title="Account Management"
 settings = st.Page("pages/settings.py", title="Settings", icon="🔧")
 
 options_positions = st.Page("pages/options_positions.py", title="Options Spreads", icon="📈")
+backtesting = st.Page("pages/backtesting.py", title="Backtesting", icon="🔄")
 
-pg = st.navigation([overview, account_detail, run_control, options_positions, model_compare, audit_logs, account_mgmt, settings])
+pg = st.navigation([overview, account_detail, run_control, options_positions, backtesting, model_compare, audit_logs, account_mgmt, settings])
 pg.run()

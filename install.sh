@@ -155,12 +155,24 @@ for f in __init__ main ghostfolio_client llm_client market_data technical_indica
     curl -fsSL "$REPO_RAW/orchestrator/src/${f}.py" -o "$INSTALL_DIR/orchestrator/src/${f}.py"
 done
 
+# Options spreads subpackage
+mkdir -p "$INSTALL_DIR/orchestrator/src/options"
+for f in __init__ prompt_builder decision_parser executor positions greeks data risk_manager; do
+    curl -fsSL "$REPO_RAW/orchestrator/src/options/${f}.py" -o "$INSTALL_DIR/orchestrator/src/options/${f}.py"
+done
+
+# Backtesting subpackage
+mkdir -p "$INSTALL_DIR/orchestrator/src/backtest"
+for f in __init__ historical_data portfolio_sim runner; do
+    curl -fsSL "$REPO_RAW/orchestrator/src/backtest/${f}.py" -o "$INSTALL_DIR/orchestrator/src/backtest/${f}.py"
+done
+
 # Dashboard
 curl -fsSL "$REPO_RAW/orchestrator/dashboard/__init__.py"    -o "$INSTALL_DIR/orchestrator/dashboard/__init__.py"
 curl -fsSL "$REPO_RAW/orchestrator/dashboard/app.py"        -o "$INSTALL_DIR/orchestrator/dashboard/app.py"
 curl -fsSL "$REPO_RAW/orchestrator/dashboard/config_utils.py" -o "$INSTALL_DIR/orchestrator/dashboard/config_utils.py"
 
-for f in __init__ overview account_detail run_control model_compare audit_logs account_management settings; do
+for f in __init__ overview account_detail run_control options_positions backtesting model_compare audit_logs account_management settings; do
     curl -fsSL "$REPO_RAW/orchestrator/dashboard/pages/${f}.py" -o "$INSTALL_DIR/orchestrator/dashboard/pages/${f}.py"
 done
 
