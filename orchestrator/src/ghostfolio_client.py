@@ -96,9 +96,8 @@ class GhostfolioClient:
             "currency": currency,
             "isExcluded": False,
             "name": name,
+            "platformId": platform_id,  # must be explicit (null or string)
         }
-        if platform_id:
-            payload["platformId"] = platform_id
         result = self._request("POST", "/api/v1/account", json=payload)
         logger.info("ghostfolio_account_created", name=name, account_id=result.get("id"))
         return result
