@@ -1,6 +1,6 @@
 # AI Investment Orchestrator
 
-LLM-powered autonomous portfolio management. Four virtual portfolios ($10k each) managed by local AI models via llama-swap, tracked in Ghostfolio. Includes a backtesting engine that replays the full LLM decision pipeline on historical data.
+LLM-powered autonomous portfolio management. Eight virtual portfolios ($10k each) managed by local AI models via llama-swap, tracked in Ghostfolio. Two parallel model families (Qwen3-Next and Nemotron) run identical strategies for A/B comparison. Includes a backtesting engine that replays the full LLM decision pipeline on historical data.
 
 ## Install
 
@@ -70,14 +70,20 @@ Dashboard available at **http://localhost:8501** after `invest start`.
 
 ## Accounts & Strategies
 
-| Account | Frequency | Strategy | Stop-Loss | Min Holding |
-|---------|-----------|----------|-----------|-------------|
-| Weekly Balanced | Sunday 20:00 | Core-Satellite (60% ETF + 30% stock + 10% cash) | -15% | 14 days |
-| Monthly Value | 1st of month 20:00 | Value investing (40% ETF + 50% stock + 10% cash) | -20% | 30 days |
-| Daily Momentum | Mon–Fri 18:00 | Momentum/Swing (20% ETF + 70% stock + 10% cash) | -8% | 1 day |
-| Options Spreads | Mon/Wed/Fri 19:00 | Vertical spreads (bull/bear call/put, delta-neutral) | 50% of max loss | DTE-based |
+Eight accounts run in two parallel model families for A/B comparison:
 
-Each account starts with $10,000. All tracked in Ghostfolio with separate account IDs.
+| Account | Model | Frequency | Strategy | Stop-Loss | Min Holding |
+|---------|-------|-----------|----------|-----------|-------------|
+| Weekly Balanced | Qwen3-Next | Sunday 20:00 | Core-Satellite (60% ETF + 30% stock + 10% cash) | -15% | 14 days |
+| Monthly Value | Qwen3-Next | 1st of month 20:00 | Value investing (40% ETF + 50% stock + 10% cash) | -20% | 30 days |
+| Daily Momentum | Qwen3-Next | Mon–Fri 18:00 | Momentum/Swing (20% ETF + 70% stock + 10% cash) | -8% | 1 day |
+| Options Spreads | Qwen3-Next | Mon/Wed/Fri 19:00 | Vertical spreads (bull/bear call/put, delta-neutral) | 50% of max loss | DTE-based |
+| Weekly Balanced (Nemotron) | Nemotron | Sunday 20:00 | Core-Satellite (60% ETF + 30% stock + 10% cash) | -15% | 14 days |
+| Monthly Value (Nemotron) | Nemotron | 1st of month 20:00 | Value investing (40% ETF + 50% stock + 10% cash) | -20% | 30 days |
+| Daily Momentum (Nemotron) | Nemotron | Mon–Fri 18:00 | Momentum/Swing (20% ETF + 70% stock + 10% cash) | -8% | 1 day |
+| Options Spreads (Nemotron) | Nemotron | Mon/Wed/Fri 19:00 | Vertical spreads (bull/bear call/put, delta-neutral) | 50% of max loss | DTE-based |
+
+Each account starts with $10,000. All tracked in Ghostfolio with separate account IDs. Nemotron accounts use Qwen3-Next as fallback model.
 
 ## Decision Process
 
