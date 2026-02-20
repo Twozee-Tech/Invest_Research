@@ -158,8 +158,14 @@ class Orchestrator:
             except Exception as e:
                 logger.warning("earnings_fetch_failed", error=str(e))
 
-            # Decision history
+            # Decision history — enrich past BUYs with current P/L from portfolio
             history = self.audit.get_decision_history(account_key, limit=4)
+            for entry in history:
+                for action in entry.get("actions", []):
+                    if action.get("type") == "BUY" and action.get("result_pct") is None:
+                        pos = portfolio.get_position(action.get("symbol", ""))
+                        if pos:
+                            action["result_pct"] = pos.unrealized_pl_pct
             history_text = format_decision_history(history)
 
             # ===== PHASE 2: LLM PASS 1 - ANALYSIS =====
@@ -272,13 +278,23 @@ class Orchestrator:
             else:
                 logger.info("phase5_no_trades", account=account_name, reason="No actions to execute")
 
-            # Get portfolio state after trades
-            portfolio_after_state = get_portfolio_state(self.ghostfolio, account_id, account_name)
+            # Estimate portfolio state after trades from executed results
+            # (Ghostfolio API may not reflect trades immediately)
+            cash_delta = 0.0
+            new_symbols = {p.symbol for p in portfolio.positions}
+            for t in executed_trades:
+                if t.get("success"):
+                    if t["type"] == "BUY":
+                        cash_delta -= t.get("total", 0)
+                        new_symbols.add(t["symbol"])
+                    elif t["type"] == "SELL":
+                        cash_delta += t.get("total", 0)
             portfolio_after = {
-                "total_value": portfolio_after_state.total_value,
-                "cash": portfolio_after_state.cash,
-                "positions": portfolio_after_state.position_count,
-                "total_pl_pct": portfolio_after_state.total_pl_pct,
+                "total_value": portfolio.total_value,  # approx — prices unchanged short-term
+                "cash": max(0, portfolio.cash + cash_delta),
+                "positions": len(new_symbols),
+                "total_pl_pct": portfolio.total_pl_pct,
+                "cash_deployed": -cash_delta,
             }
 
         except Exception as e:

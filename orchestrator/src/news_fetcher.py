@@ -76,35 +76,60 @@ class NewsFetcher:
         watchlist: list[str],
         max_items: int = 10,
     ) -> list[NewsItem]:
-        """Fetch news filtered for relevance to a watchlist."""
+        """Fetch news filtered for relevance to a watchlist.
+
+        Returns watchlist-specific news first, filled with general financial
+        news if needed. Avoids injecting totally unrelated stories.
+        """
         all_news = self.fetch_news(max_items=50)
 
-        # Score relevance to watchlist
+        symbol_to_name = {
+            "AAPL": "APPLE", "MSFT": "MICROSOFT", "GOOGL": "GOOGLE",
+            "AMZN": "AMAZON", "NVDA": "NVIDIA", "META": "META",
+            "TSLA": "TESLA", "JPM": "JPMORGAN", "V": "VISA",
+            "JNJ": "JOHNSON", "UNH": "UNITEDHEALTH", "WMT": "WALMART",
+            "PG": "PROCTER", "KO": "COCA-COLA", "HD": "HOME DEPOT",
+            "AMD": "AMD", "COIN": "COINBASE", "PLTR": "PALANTIR",
+            "SOFI": "SOFI", "SPY": "S&P 500", "QQQ": "NASDAQ",
+            "SCHD": "SCHWAB", "VTI": "VANGUARD", "VOO": "VANGUARD",
+            "IWM": "RUSSELL", "MARA": "MARATHON",
+        }
+        watchlist_upper = {s.upper() for s in watchlist}
+
+        watchlist_items: list[NewsItem] = []
+        general_items: list[NewsItem] = []
+
         for item in all_news:
-            score = item.relevance_score
             text = f"{item.title} {item.summary}".upper()
-            for symbol in watchlist:
-                if symbol.upper() in text:
-                    score += 2.0
-            # Check for company names
-            symbol_to_name = {
-                "AAPL": "APPLE", "MSFT": "MICROSOFT", "GOOGL": "GOOGLE",
-                "AMZN": "AMAZON", "NVDA": "NVIDIA", "META": "META",
-                "TSLA": "TESLA", "JPM": "JPMORGAN", "V": "VISA",
-                "JNJ": "JOHNSON", "UNH": "UNITEDHEALTH", "WMT": "WALMART",
-                "PG": "PROCTER", "KO": "COCA-COLA", "HD": "HOME DEPOT",
-                "AMD": "AMD", "COIN": "COINBASE", "PLTR": "PALANTIR",
-                "SOFI": "SOFI", "SPY": "S&P 500", "QQQ": "NASDAQ",
-            }
+            boost = 0.0
+
+            for sym in watchlist_upper:
+                if sym in text:
+                    boost += 2.0
             for sym in watchlist:
                 name = symbol_to_name.get(sym, "")
                 if name and name in text:
-                    score += 1.5
-            item.relevance_score = score
+                    boost += 1.5
 
-        # Sort by relevance and return top items
-        relevant = sorted(all_news, key=lambda x: x.relevance_score, reverse=True)
-        return relevant[:max_items]
+            if boost > 0:
+                item.relevance_score += boost
+                watchlist_items.append(item)
+            else:
+                general_items.append(item)
+
+        # Watchlist-specific news first, fill remainder with general financial news
+        result = sorted(watchlist_items, key=lambda x: x.relevance_score, reverse=True)[:max_items]
+        if len(result) < max_items:
+            general_sorted = sorted(general_items, key=lambda x: x.relevance_score, reverse=True)
+            result.extend(general_sorted[:max_items - len(result)])
+
+        logger.debug(
+            "news_relevant_filtered",
+            watchlist_count=len(watchlist_items),
+            general_count=len(general_items),
+            returned=len(result),
+        )
+        return result
 
     def _parse_feed(self, url: str, source: str) -> list[NewsItem]:
         """Parse a single RSS feed."""

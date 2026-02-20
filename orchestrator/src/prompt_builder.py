@@ -34,7 +34,10 @@ def build_pass1_messages(
         "{\n"
         '  "market_regime": "BULL_TREND" | "BEAR_TREND" | "SIDEWAYS" | "HIGH_VOLATILITY",\n'
         '  "regime_reasoning": "string explaining why",\n'
-        '  "sector_analysis": { "sector_name": "OVERWEIGHT|NEUTRAL|UNDERWEIGHT - reason" },\n'
+        '  "sector_analysis": {\n'
+        '    "SectorName": {"rating": "OVERWEIGHT|NEUTRAL|UNDERWEIGHT", "score": 2, "reason": "brief"}\n'
+        '  },\n'
+        '  "_sector_score_scale": "-2=strong underweight, -1=underweight, 0=neutral, +1=overweight, +2=strong overweight",\n'
         '  "portfolio_health": {\n'
         '    "diversification": "GOOD" | "POOR" | "CONCENTRATED",\n'
         '    "risk_level": "LOW" | "MEDIUM" | "HIGH",\n'

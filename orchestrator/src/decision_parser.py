@@ -109,15 +109,28 @@ class AnalysisResult(BaseModel):
         elif raw_health is not None and not isinstance(raw_health, dict):
             data["portfolio_health"] = {}
 
-        # --- Normalize sector_analysis values to strings ---
+        # --- Normalize sector_analysis values (support both old string and new dict format) ---
         raw_sectors = data.get("sector_analysis")
         if isinstance(raw_sectors, str):
             # LLM returned a plain description string — discard it (can't parse reliably)
             data["sector_analysis"] = {}
         elif isinstance(raw_sectors, dict):
+            # Remove meta keys like _sector_score_scale
+            raw_sectors.pop("_sector_score_scale", None)
+            normalized_sectors: dict[str, str] = {}
             for k, v in raw_sectors.items():
-                if not isinstance(v, str):
-                    raw_sectors[k] = str(v)
+                if k.startswith("_"):
+                    continue  # skip meta keys
+                if isinstance(v, dict):
+                    # New structured format: {"rating": "OVERWEIGHT", "score": 2, "reason": "..."}
+                    rating = v.get("rating", "NEUTRAL")
+                    score = v.get("score", 0)
+                    reason = v.get("reason", "")
+                    score_str = f"+{score}" if score > 0 else str(score)
+                    normalized_sectors[k] = f"{rating} [{score_str}] - {reason}"
+                else:
+                    normalized_sectors[k] = str(v)
+            data["sector_analysis"] = normalized_sectors
 
         return data
 
