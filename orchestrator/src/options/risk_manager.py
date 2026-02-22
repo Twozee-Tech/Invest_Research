@@ -1,150 +1,230 @@
-"""Options-specific risk manager: validates open/close decisions and applies auto-rules."""
+"""Risk manager for the Wheel Strategy.
+
+Validates WheelDecision actions against per-account risk rules and adds
+auto-close rules for near-expiry or profit-target positions.
+
+Produces an OptionsRiskResult that main.py already knows how to consume:
+  .approved_opens   → SELL_CSP + SELL_CC actions that passed validation
+  .approved_closes  → CLOSE actions approved (LLM-requested)
+  .forced_closes    → auto-close positions (DTE, take-profit)
+  .approved_rolls   → always empty for the Wheel (no roll concept)
+  .rejected_opens   → {instruction, reason} dicts for rejected actions
+  .modifications    → human-readable log of changes/rejections
+  .warnings         → non-blocking risk warnings
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date, datetime
 
 import structlog
 
 from ..portfolio_state import PortfolioState
-from .decision_parser import CloseInstruction, OpenInstruction, OptionsDecision, RollInstruction
-from .greeks import PortfolioGreeks
 from .positions import OptionsPosition
+# Import from the deployed module name.
+# When this file is placed in the options package as decision_parser.py (or
+# wheel_decision_parser.py), adjust this import to match the actual filename.
+from .decision_parser import WheelAction, WheelDecision
 
 logger = structlog.get_logger()
 
 
+# ---------------------------------------------------------------------------
+# Result type (compatible with what main.py expects from OptionsRiskManager)
+# ---------------------------------------------------------------------------
+
 @dataclass
 class OptionsRiskResult:
-    approved_opens: list[OpenInstruction] = field(default_factory=list)
-    rejected_opens: list[dict] = field(default_factory=list)    # {instruction, reason}
-    approved_closes: list[CloseInstruction] = field(default_factory=list)
-    forced_closes: list[CloseInstruction] = field(default_factory=list)   # auto-close rules
-    approved_rolls: list[RollInstruction] = field(default_factory=list)
+    """Validated wheel actions ready for execution."""
+    # approved_opens: SELL_CSP and SELL_CC actions that passed all checks
+    approved_opens: list[WheelAction] = field(default_factory=list)
+    # rejected_opens: {"instruction": WheelAction, "reason": str}
+    rejected_opens: list[dict] = field(default_factory=list)
+    # approved_closes: LLM-requested CLOSE actions for known positions
+    approved_closes: list[WheelAction] = field(default_factory=list)
+    # forced_closes: auto-close rules (DTE expiry, take-profit)
+    forced_closes: list[WheelAction] = field(default_factory=list)
+    # approved_rolls: always empty for wheel strategy
+    approved_rolls: list = field(default_factory=list)
     modifications: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# Risk manager
+# ---------------------------------------------------------------------------
+
 class OptionsRiskManager:
-    """Validates options decisions against per-account risk rules."""
+    """Validate Wheel Strategy decisions against per-account risk rules."""
 
     def __init__(self, risk_profile: dict):
-        self.max_portfolio_delta_pct = risk_profile.get("max_portfolio_delta_pct", 15)
-        self.min_cash_pct = risk_profile.get("min_cash_pct", 40)
-        self.max_open_spreads = risk_profile.get("max_open_spreads", 5)
-        self.max_allocation_pct = risk_profile.get("max_allocation_per_spread_pct", 10)
-        self.min_new_dte = risk_profile.get("min_new_position_dte", 21)
-        self.auto_close_dte = risk_profile.get("auto_close_dte", 7)
-        self.take_profit_pct = risk_profile.get("take_profit_pct", 75)
-        self.stop_loss_pct = risk_profile.get("stop_loss_pct", 50)
+        self.max_open_csps: int = risk_profile.get("max_open_csps", 3)
+        self.max_ccs_per_symbol: int = risk_profile.get("max_ccs_per_symbol", 2)
+        self.min_cash_pct: float = risk_profile.get("min_cash_pct", 40.0)
+        self.earnings_blackout_days: int = risk_profile.get("earnings_blackout_days", 5)
+        self.take_profit_pct: float = risk_profile.get("take_profit_pct", 50.0)
+        self.auto_close_dte: int = risk_profile.get("auto_close_dte", 3)
+        # For legacy compatibility (greeks-based delta warnings)
+        self.max_portfolio_delta_pct: float = risk_profile.get("max_portfolio_delta_pct", 15.0)
+
+    # ── Public interface ───────────────────────────────────────────────────────
 
     def validate(
         self,
-        decision: OptionsDecision,
+        decision: WheelDecision,
         active_positions: list[OptionsPosition],
         portfolio: PortfolioState,
-        portfolio_greeks: PortfolioGreeks,
+        portfolio_greeks=None,      # optional; only used for delta warning
     ) -> OptionsRiskResult:
-        result = OptionsRiskResult()
-        account_value = portfolio.total_value or 10000
+        """Validate all wheel actions and auto-close rules.
 
-        # ── Step 1: Auto-close rules (independent of LLM decision) ──────────
-        llm_close_ids = {c.position_id for c in decision.close_positions}
-        llm_roll_ids = {r.position_id for r in decision.roll_positions}
+        Args:
+            decision:         Parsed LLM wheel decision.
+            active_positions: Currently open CSP/CC positions from the tracker.
+            portfolio:        Live portfolio state (cash, total_value, …).
+            portfolio_greeks: Optional PortfolioGreeks (for delta warning).
+
+        Returns:
+            OptionsRiskResult with approved/rejected/forced lists.
+        """
+        result = OptionsRiskResult()
+        account_value = portfolio.total_value or 1.0
+        cash = portfolio.cash
+
+        # Build lookup helpers
+        active_ids = {p.id for p in active_positions}
+        pos_by_id = {p.id: p for p in active_positions}
+
+        # Count existing positions by type
+        open_csps = [p for p in active_positions if p.spread_type == "CASH_SECURED_PUT"]
+        open_ccs_by_symbol: dict[str, list[OptionsPosition]] = {}
+        for p in active_positions:
+            if p.spread_type == "COVERED_CALL":
+                open_ccs_by_symbol.setdefault(p.symbol, []).append(p)
+
+        # ── Step 1: Auto-close rules (independent of LLM decision) ───────────
+        llm_close_ids = {
+            a.position_id for a in decision.actions
+            if a.type == "CLOSE" and a.position_id is not None
+        }
 
         for pos in active_positions:
-            if pos.id in llm_close_ids or pos.id in llm_roll_ids:
-                continue  # LLM already handling it
+            if pos.id in llm_close_ids:
+                continue   # LLM already handling it
 
-            # DTE auto-close
-            if pos.dte is not None and pos.dte <= self.auto_close_dte:
-                reason = f"DTE={pos.dte} ≤ auto_close threshold ({self.auto_close_dte})"
-                result.forced_closes.append(CloseInstruction(pos.id, reason))
-                result.modifications.append(f"[AUTO-CLOSE] {pos.symbol} {pos.spread_type}: {reason}")
-                logger.info("options_auto_close_dte", pos_id=pos.id, dte=pos.dte)
+            forced = self._auto_close_check(pos)
+            if forced is not None:
+                result.forced_closes.append(forced)
+                result.modifications.append(
+                    f"[AUTO-CLOSE] {pos.symbol} {pos.spread_type} ID:{pos.id}: {forced.reason}"
+                )
+
+        forced_close_ids = {a.position_id for a in result.forced_closes}
+
+        # ── Step 2: LLM-requested CLOSE actions ──────────────────────────────
+        for action in decision.actions:
+            if action.type != "CLOSE":
+                continue
+            pid = action.position_id
+            if pid is None:
+                result.warnings.append("CLOSE action missing position_id — skipped")
+                continue
+            if pid in forced_close_ids:
+                continue   # already in forced_closes
+            if pid not in active_ids:
+                result.warnings.append(f"CLOSE for unknown position ID {pid} — skipped")
+                continue
+            result.approved_closes.append(action)
+
+        # ── Step 3: Validate SELL_CSP actions ────────────────────────────────
+        # After planned closes, how many CSPs will remain?
+        closing_ids = forced_close_ids | {a.position_id for a in result.approved_closes if a.position_id}
+        current_csp_count = sum(
+            1 for p in open_csps if p.id not in closing_ids
+        )
+        cash_available = cash   # we will decrement as we approve CSPs
+
+        for action in decision.actions:
+            if action.type != "SELL_CSP":
                 continue
 
-            # Take profit
-            captured = pos.profit_captured_pct
-            if captured is not None and captured >= self.take_profit_pct:
-                reason = f"Take profit: {captured:.0f}% of max profit captured"
-                result.forced_closes.append(CloseInstruction(pos.id, reason))
-                result.modifications.append(f"[TAKE-PROFIT] {pos.symbol} {pos.spread_type}: {reason}")
-                logger.info("options_take_profit", pos_id=pos.id, captured_pct=captured)
+            symbol = action.symbol
+            contracts = max(1, action.contracts)
+
+            # 1. Max open CSPs
+            if current_csp_count >= self.max_open_csps:
+                reason = (
+                    f"Max open CSPs ({self.max_open_csps}) already reached "
+                    f"(currently {current_csp_count})"
+                )
+                result.rejected_opens.append({"instruction": action, "reason": reason})
+                result.modifications.append(f"[REJECTED CSP] {symbol}: {reason}")
                 continue
 
-            # Stop loss
-            if pos.current_pl is not None and pos.max_loss > 0:
-                loss_pct = (-pos.current_pl / pos.max_loss * 100) if pos.current_pl < 0 else 0
-                if loss_pct >= self.stop_loss_pct:
-                    reason = f"Stop loss: {loss_pct:.0f}% of max loss reached"
-                    result.forced_closes.append(CloseInstruction(pos.id, reason))
-                    result.modifications.append(f"[STOP-LOSS] {pos.symbol} {pos.spread_type}: {reason}")
-                    logger.info("options_stop_loss", pos_id=pos.id, loss_pct=loss_pct)
-                    continue
-
-        # ── Step 2: Pass through LLM closes ─────────────────────────────────
-        forced_close_ids = {c.position_id for c in result.forced_closes}
-        active_ids = {p.id for p in active_positions}
-
-        for close in decision.close_positions:
-            if close.position_id not in forced_close_ids:
-                if close.position_id in active_ids:
-                    result.approved_closes.append(close)
-                else:
-                    result.warnings.append(f"Close request for unknown position ID: {close.position_id}")
-
-        # ── Step 3: Pass through rolls (only for known, non-closing positions) ──
-        closing_ids = forced_close_ids | {c.position_id for c in result.approved_closes}
-        for roll in decision.roll_positions:
-            if roll.position_id in active_ids and roll.position_id not in closing_ids:
-                result.approved_rolls.append(roll)
-            else:
-                result.warnings.append(f"Roll request for closed/unknown position: {roll.position_id}")
-
-        # ── Step 4: Validate new opens ───────────────────────────────────────
-        cash = portfolio.cash
-        open_after_closes = len(active_positions) - len(result.forced_closes) - len(result.approved_closes)
-
-        for inst in decision.open_new:
-            # Max open spreads limit
-            if open_after_closes >= self.max_open_spreads:
-                reason = f"Max open spreads ({self.max_open_spreads}) reached"
-                result.rejected_opens.append({"instruction": inst, "reason": reason})
-                result.modifications.append(f"[REJECTED] Open {inst.symbol} {inst.spread_type}: {reason}")
-                continue
-
-            # Cash reserve check (estimate: max_loss = 10% of account per spread)
-            estimated_max_loss = account_value * self.max_allocation_pct / 100
-            if cash < estimated_max_loss:
-                reason = f"Insufficient cash (${cash:.0f}) for new spread (est. max loss ${estimated_max_loss:.0f})"
-                result.rejected_opens.append({"instruction": inst, "reason": reason})
-                result.modifications.append(f"[REJECTED] Open {inst.symbol}: {reason}")
-                continue
-
-            # Min cash pct check
-            cash_after = cash - estimated_max_loss
+            # 2. Cash reserve: approximate assignment cost
+            #    (strike unknown yet, so estimate using current price as proxy)
+            estimated_assignment = _estimate_assignment_cost(
+                action, portfolio, account_value
+            )
+            cash_after = cash_available - estimated_assignment
             cash_after_pct = cash_after / account_value * 100
             if cash_after_pct < self.min_cash_pct:
-                reason = f"Would breach min cash reserve (would leave {cash_after_pct:.1f}% < {self.min_cash_pct}%)"
-                result.rejected_opens.append({"instruction": inst, "reason": reason})
-                result.modifications.append(f"[REJECTED] Open {inst.symbol}: {reason}")
+                reason = (
+                    f"Would breach min cash reserve: ${cash_after:,.0f} "
+                    f"({cash_after_pct:.1f}%) < {self.min_cash_pct}%"
+                )
+                result.rejected_opens.append({"instruction": action, "reason": reason})
+                result.modifications.append(f"[REJECTED CSP] {symbol}: {reason}")
                 continue
 
-            # Direction must match spread type
-            if inst.direction == "bullish" and inst.spread_type == "BEAR_PUT":
-                inst.spread_type = "BULL_CALL"
-                result.modifications.append(f"[FIX] {inst.symbol}: changed BEAR_PUT → BULL_CALL (bullish direction)")
-            elif inst.direction == "bearish" and inst.spread_type == "BULL_CALL":
-                inst.spread_type = "BEAR_PUT"
-                result.modifications.append(f"[FIX] {inst.symbol}: changed BULL_CALL → BEAR_PUT (bearish direction)")
+            # 3. Earnings blackout — only block if earnings are described as IMMINENT
+            if _earnings_flag_in_reason(action.reason):
+                reason = f"Action flagged as near-earnings: '{action.reason}'"
+                result.rejected_opens.append({"instruction": action, "reason": reason})
+                result.modifications.append(f"[REJECTED CSP] {symbol}: {reason}")
+                continue
 
-            result.approved_opens.append(inst)
-            open_after_closes += 1
-            cash -= estimated_max_loss
+            # Approved
+            result.approved_opens.append(action)
+            current_csp_count += 1
+            cash_available -= estimated_assignment
+
+        # ── Step 4: Validate SELL_CC actions ─────────────────────────────────
+        for action in decision.actions:
+            if action.type != "SELL_CC":
+                continue
+
+            symbol = action.symbol
+            contracts = max(1, action.contracts)
+
+            # Must reference an existing assigned position (position_id)
+            pid = action.position_id
+            if pid is not None and pid not in active_ids:
+                reason = f"Referenced assigned position ID {pid} not found in active positions"
+                result.rejected_opens.append({"instruction": action, "reason": reason})
+                result.modifications.append(f"[REJECTED CC] {symbol}: {reason}")
+                continue
+
+            # Max CCs per symbol
+            symbol_cc_count = len(open_ccs_by_symbol.get(symbol, []))
+            if symbol_cc_count >= self.max_ccs_per_symbol:
+                reason = (
+                    f"Max CCs per symbol ({self.max_ccs_per_symbol}) already reached "
+                    f"for {symbol} (currently {symbol_cc_count})"
+                )
+                result.rejected_opens.append({"instruction": action, "reason": reason})
+                result.modifications.append(f"[REJECTED CC] {symbol}: {reason}")
+                continue
+
+            # CC strike ≥ cost_basis check is deferred to the selector/executor,
+            # which knows the actual strike.  We just pass the action through.
+
+            result.approved_opens.append(action)
+            open_ccs_by_symbol.setdefault(symbol, []).append(None)  # type: ignore[arg-type]
 
         # ── Step 5: Portfolio delta warning ──────────────────────────────────
-        if account_value > 0:
+        if portfolio_greeks is not None and account_value > 0:
             delta_as_pct = abs(portfolio_greeks.total_delta) / account_value * 100
             if delta_as_pct > self.max_portfolio_delta_pct:
                 result.warnings.append(
@@ -152,4 +232,99 @@ class OptionsRiskManager:
                     f"±{self.max_portfolio_delta_pct}% threshold"
                 )
 
+        logger.info(
+            "wheel_risk_validated",
+            approved_opens=len(result.approved_opens),
+            approved_closes=len(result.approved_closes),
+            forced_closes=len(result.forced_closes),
+            rejected_opens=len(result.rejected_opens),
+            warnings=len(result.warnings),
+        )
+
         return result
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _auto_close_check(self, pos: OptionsPosition) -> WheelAction | None:
+        """Return a forced-close WheelAction if the position meets an auto-close rule."""
+
+        # DTE expiry threshold (avoid assignment/exercise risk at last moment)
+        if pos.dte is not None and pos.dte <= self.auto_close_dte:
+            return WheelAction(
+                type="CLOSE",
+                symbol=pos.symbol,
+                position_id=pos.id,
+                reason=f"DTE={pos.dte} ≤ auto-close threshold ({self.auto_close_dte})",
+            )
+
+        # Take-profit: captured enough premium
+        captured = pos.profit_captured_pct
+        if captured is not None and captured >= self.take_profit_pct:
+            return WheelAction(
+                type="CLOSE",
+                symbol=pos.symbol,
+                position_id=pos.id,
+                reason=f"Take-profit: {captured:.0f}% of max premium captured (≥{self.take_profit_pct}%)",
+            )
+
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
+
+def _estimate_assignment_cost(
+    action: WheelAction,
+    portfolio: PortfolioState,
+    account_value: float,
+) -> float:
+    """Estimate cash needed to cover potential assignment for a CSP.
+
+    If the LLM supplied a strike hint, use strike × 100 × contracts.
+    Otherwise fall back to 10% of account value as a conservative estimate.
+    """
+    contracts = max(1, action.contracts)
+    if action.strike and action.strike > 0:
+        return action.strike * 100 * contracts
+    # Fallback: 10% of account per position
+    return account_value * 0.10 * contracts
+
+
+def _earnings_flag_in_reason(reason: str) -> bool:
+    """Return True only if the reason indicates earnings are imminently risky.
+
+    Avoids false positives when the LLM says things like
+    "no earnings for 6+ weeks" or "earnings far away" — those contain the word
+    'earnings' but are NOT a risk flag.
+    """
+    lower = reason.lower()
+
+    # Explicit safe phrases — LLM confirmed earnings are NOT imminent
+    safe_phrases = (
+        "no earnings",
+        "no upcoming earnings",
+        "earnings not soon",
+        "earnings far",
+        "earnings are not",
+        "earnings aren't",
+    )
+    if any(p in lower for p in safe_phrases):
+        return False
+
+    # Risky earnings phrases — earnings are described as close / this week
+    block_triggers = (
+        "before earnings",
+        "near earnings",
+        "earnings soon",
+        "earnings this week",
+        "earnings tomorrow",
+        "er soon",
+        "er in ",
+        "earnings in 1",
+        "earnings in 2",
+        "earnings in 3",
+        "earnings in 4",
+        "earnings in 5",
+    )
+    return any(t in lower for t in block_triggers)

@@ -517,6 +517,7 @@ class Orchestrator:
                 account_id=account_id,
                 risk_profile=risk_profile,
                 dry_run=self.dry_run,
+                account_key=account_key,
             )
 
             all_closes = risk_result.forced_closes + risk_result.approved_closes
@@ -525,7 +526,7 @@ class Orchestrator:
 
             # Refresh active positions after closes
             updated_active = tracker.get_active_positions(account_key)
-            open_results = executor.execute_opens(risk_result.approved_opens)
+            open_results = executor.execute_opens(risk_result.approved_opens, updated_active)
 
             # Update held positions (Greeks + P&L)
             remaining_active = tracker.get_active_positions(account_key)

@@ -1,4 +1,9 @@
-"""Build LLM prompts for options trading decisions."""
+"""Build LLM prompts for Wheel Strategy options trading decisions.
+
+Pass 1 – Market analysis: find quality underlyings with elevated IV and good
+         support levels suitable for cash-secured puts.
+Pass 2 – Concrete wheel actions: SELL_CSP, SELL_CC, CLOSE, or SKIP.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +14,10 @@ from .greeks import PortfolioGreeks
 from .positions import OptionsPosition
 
 
+# ---------------------------------------------------------------------------
+# Pass 1: Market + IV Analysis
+# ---------------------------------------------------------------------------
+
 def build_options_pass1_messages(
     portfolio: PortfolioState,
     market_data: dict[str, dict],
@@ -16,22 +25,26 @@ def build_options_pass1_messages(
     news_text: str,
     strategy_config: dict,
     active_positions: list[OptionsPosition],
-    iv_data: dict[str, float | None],       # symbol → IV percentile
+    iv_data: dict[str, float | None],       # symbol → IV percentile (0-100)
     portfolio_greeks: PortfolioGreeks,
 ) -> list[dict]:
-    """Pass 1: Market analysis with IV regime focus."""
+    """Pass 1: Market analysis focused on Wheel Strategy suitability.
+
+    Goal: identify which watchlist symbols are good CSP candidates right now
+    (elevated IV, solid support, not near earnings) and which assigned positions
+    are ready for covered calls.
+    """
 
     system = (
-        "You are an options market analyst. Analyze market conditions, implied volatility "
-        "regime, and directional bias for each underlying. "
+        "You are an options income analyst specialising in the Wheel Strategy "
+        "(sell cash-secured puts → if assigned, sell covered calls → repeat). "
+        "Analyse market conditions, implied volatility regime, and per-symbol "
+        "suitability for selling puts or calls. "
         "Do NOT decide specific trades yet — that comes in Pass 2. "
         "Output valid JSON only, no markdown."
     )
 
-    # Format active positions
-    pos_text = _format_active_positions(active_positions, portfolio_greeks)
-
-    # Format market data with IV
+    pos_text = _format_active_positions(active_positions)
     mkt_text = _format_market_with_iv(market_data, technical_signals, iv_data)
 
     user = f"""{portfolio.to_prompt_text()}
@@ -44,25 +57,30 @@ def build_options_pass1_messages(
 == RECENT NEWS ==
 {news_text or "No recent news."}
 
-Analyze the above and return JSON:
+Analyse the above for Wheel Strategy opportunities and return JSON:
 {{
   "market_regime": "BULL_TREND|BEAR_TREND|SIDEWAYS|HIGH_VOLATILITY",
   "regime_reasoning": "brief explanation",
   "iv_regime": "HIGH|NORMAL|LOW",
-  "iv_reasoning": "is premium selling or buying favored?",
+  "iv_reasoning": "is premium selling favoured right now?",
   "sector_analysis": {{"sector_name": "BULLISH|NEUTRAL|BEARISH - reason"}},
   "per_symbol": {{
     "SYMBOL": {{
       "bias": "BULLISH|NEUTRAL|BEARISH",
       "iv_percentile": 45,
-      "action_suggestion": "SELL_PREMIUM|BUY_DEBIT|AVOID",
+      "wheel_suitability": "GOOD|FAIR|POOR",
+      "csp_candidate": true,
+      "support_level": 150.0,
+      "earnings_soon": false,
       "reason": "brief"
     }}
   }},
   "portfolio_health": {{
-    "diversification": "GOOD|POOR|CONCENTRATED",
-    "risk_level": "LOW|MEDIUM|HIGH",
-    "issues": ["list"]
+    "open_csps": 2,
+    "open_ccs": 1,
+    "assigned_positions": 0,
+    "cash_deployed_pct": 30.0,
+    "issues": ["list of issues, if any"]
   }},
   "threats": [{{"description": "macro or specific threat"}}]
 }}"""
@@ -73,6 +91,10 @@ Analyze the above and return JSON:
     ]
 
 
+# ---------------------------------------------------------------------------
+# Pass 2: Concrete Wheel Actions
+# ---------------------------------------------------------------------------
+
 def build_options_pass2_messages(
     analysis_json: dict,
     portfolio: PortfolioState,
@@ -82,44 +104,56 @@ def build_options_pass2_messages(
     portfolio_greeks: PortfolioGreeks,
     decision_history: str = "",
 ) -> list[dict]:
-    """Pass 2: Concrete open/close/roll decisions."""
+    """Pass 2: Decide concrete Wheel Strategy actions.
 
-    risk_text = _format_options_risk_rules(risk_profile)
+    LLM chooses action type (SELL_CSP / SELL_CC / CLOSE / SKIP) and symbol.
+    The selector module picks exact strikes and expiration dates.
+    """
+
     pos_text = _format_active_positions_detailed(active_positions)
+    risk_text = _format_wheel_risk_rules(risk_profile)
     watchlist = strategy_config.get("watchlist", [])
-    strategy_desc = strategy_config.get("strategy_description", "")
+    strategy_desc = strategy_config.get("strategy_description", "Wheel Strategy")
+    max_csp = risk_profile.get("max_open_csps", 3)
+    min_cash_pct = risk_profile.get("min_cash_pct", 40)
 
     system = (
-        "You are an options portfolio manager running vertical spreads. "
-        "Based on the market analysis, decide which positions to HOLD, CLOSE, ROLL, "
-        "or which new spreads to OPEN. "
-        "You decide the direction and spread type — the system will pick exact strikes. "
-        "You do NOT pick strikes or expiration dates. "
+        "You are a Wheel Strategy portfolio manager. "
+        "Your goal is sustainable income: sell OTM cash-secured puts on quality "
+        "underlyings you are comfortable owning; if assigned, sell covered calls "
+        "at or above cost basis to reduce it further and eventually exit with profit. "
+        "You decide the ACTION TYPE and SYMBOL only — the system picks exact strikes "
+        "and expiration dates automatically. "
         "Output valid JSON only, no markdown.\n\n"
-        "SPREAD TYPE REFERENCE:\n"
-        "CREDIT SPREADS (collect premium, theta positive — use when IV > 70th percentile):\n"
-        "  BULL_PUT: sell higher-strike put, buy lower-strike put (bullish/neutral bias)\n"
-        "  BEAR_CALL: sell lower-strike call, buy higher-strike call (bearish/neutral bias)\n"
-        "DEBIT SPREADS (pay premium, directional — use when IV < 30th percentile):\n"
-        "  BULL_CALL: buy lower-strike call, sell higher-strike call (bullish bias)\n"
-        "  BEAR_PUT: buy higher-strike put, sell lower-strike put (bearish bias)\n"
-        "Rule: IV > 70th pct → prefer CREDIT spreads (sell premium).\n"
-        "      IV < 30th pct → prefer DEBIT spreads (directional).\n"
-        "      IV 30-70th pct → choose based on directional conviction.\n"
-        "CRITICAL: Match spread_type to direction — BULL_* = bullish, BEAR_* = bearish."
+        "WHEEL STRATEGY PHASES:\n"
+        "  SELL_CSP  → Sell a cash-secured put (OTM, delta ~0.25-0.35, DTE 30-45)\n"
+        "              Collect premium. If assigned → own stock at strike.\n"
+        "  SELL_CC   → Against assigned stock, sell an OTM covered call\n"
+        "              (strike ≥ cost basis, delta ~0.25, DTE 14-30).\n"
+        "              Collect premium. If called away → complete the wheel.\n"
+        "  CLOSE     → Buy back an existing CSP or CC position early\n"
+        "              (e.g. 50%+ of premium captured, or before earnings).\n"
+        "  SKIP      → Do nothing for a symbol this cycle (with reason).\n\n"
+        "CRITICAL RULES:\n"
+        "  • Only sell CSPs on stocks you would genuinely be happy to own.\n"
+        "  • Avoid CSPs within 5 trading days of earnings.\n"
+        "  • CC strike must be ≥ cost basis of the assigned stock.\n"
+        "  • Prefer high-IV environments for premium selling.\n"
+        "  • Be selective — quality over quantity."
     )
 
     user = f"""== STRATEGY: {strategy_desc} ==
 
-== MARKET ANALYSIS ==
+== MARKET ANALYSIS (Pass 1) ==
 {json.dumps(analysis_json, indent=2)}
 
-== CURRENT PORTFOLIO GREEKS ==
-Net Delta: {portfolio_greeks.total_delta:+.2f} | Theta: ${portfolio_greeks.total_theta:+.2f}/day | Vega: ${portfolio_greeks.total_vega:+.2f}/1%IV
+== CURRENT PORTFOLIO ==
 Cash: ${portfolio.cash:,.2f} ({portfolio.cash_pct:.1f}% of account)
-Open positions: {portfolio_greeks.position_count}
+Total value: ${portfolio.total_value:,.2f}
+Open CSP/CC positions: {len(active_positions)}
+Net theta: ${portfolio_greeks.total_theta:+.2f}/day
 
-== ACTIVE OPTION POSITIONS ==
+== ACTIVE WHEEL POSITIONS ==
 {pos_text}
 
 == RISK RULES ==
@@ -131,35 +165,48 @@ Open positions: {portfolio_greeks.position_count}
 == YOUR PREVIOUS DECISIONS ==
 {decision_history or "No history yet."}
 
-Decide what to do with each position and what new spreads to open.
+Based on the market analysis, decide what wheel actions to take.
 Return JSON:
 {{
-  "reasoning": "detailed chain of thought about market direction and Greeks management",
-  "hold_positions": [1, 2],
-  "close_positions": [
-    {{"id": 3, "reason": "DTE < 7, approaching expiry"}}
-  ],
-  "roll_positions": [
-    {{"id": 4, "direction": "bearish", "spread_type": "BEAR_PUT"}}
-  ],
-  "open_new": [
+  "market_comment": "brief reasoning about current conditions and why you are/are not selling premium",
+  "outlook": "BULLISH|CAUTIOUSLY_BULLISH|NEUTRAL|CAUTIOUSLY_BEARISH|BEARISH",
+  "confidence": 0.0,
+  "actions": [
     {{
+      "type": "SELL_CSP",
+      "symbol": "AAPL",
+      "contracts": 1,
+      "reason": "IV at 68th pct, solid support at $170, no earnings for 6 weeks"
+    }},
+    {{
+      "type": "SELL_CC",
+      "symbol": "MSFT",
+      "position_id": 42,
+      "contracts": 1,
+      "reason": "Assigned at $380; selling call above cost basis to reduce it"
+    }},
+    {{
+      "type": "CLOSE",
       "symbol": "SPY",
-      "direction": "bearish",
-      "spread_type": "BEAR_PUT",
-      "size": "small|medium|large",
-      "thesis": "SPY showing weakness, IV at 65th percentile favors selling premium"
+      "position_id": 7,
+      "reason": "Captured 72% of max premium, taking profit early"
+    }},
+    {{
+      "type": "SKIP",
+      "symbol": "TSLA",
+      "reason": "Earnings in 4 days, IV spike too risky"
     }}
-  ],
-  "portfolio_outlook": "BULLISH|CAUTIOUSLY_BULLISH|NEUTRAL|CAUTIOUSLY_BEARISH|BEARISH",
-  "confidence": 0.0
+  ]
 }}
 
 Rules:
-- close_positions and hold_positions: use the position IDs from active positions above
-- size: "small" = 1 contract, "medium" = 2 contracts, "large" = 3 contracts
-- Only open new spreads if you have a clear directional thesis
-- NEUTRAL market = prefer HOLD over opening new positions
+- Max {max_csp} open CSP positions total; do not open more if at limit
+- Keep at least {min_cash_pct}% of account in cash (for assignment coverage)
+- For SELL_CC: include position_id of the assigned stock position
+- For CLOSE: include position_id of the CSP or CC to buy back
+- You do NOT pick strikes or expiration dates — the system does that
+- If market is uncertain or IV is low, output SKIP or no SELL_CSP actions
+- Prefer closing positions that have captured ≥50% of max premium
 """
 
     return [
@@ -168,49 +215,64 @@ Rules:
     ]
 
 
-# ── Formatters ────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Formatters
+# ---------------------------------------------------------------------------
 
-def _format_active_positions(
-    positions: list[OptionsPosition],
-    portfolio_greeks: PortfolioGreeks,
-) -> str:
+def _format_active_positions(positions: list[OptionsPosition]) -> str:
+    """Brief summary for Pass 1 (just counts and types)."""
     if not positions:
-        return "== ACTIVE OPTION POSITIONS ==\n(none — cash only)"
+        return "== ACTIVE WHEEL POSITIONS ==\n(none — no open CSPs or CCs)"
+
+    csps = [p for p in positions if p.spread_type == "CASH_SECURED_PUT"]
+    ccs = [p for p in positions if p.spread_type == "COVERED_CALL"]
+    other = [p for p in positions if p.spread_type not in ("CASH_SECURED_PUT", "COVERED_CALL")]
 
     lines = [
-        "== ACTIVE OPTION POSITIONS ==",
-        f"Portfolio Greeks: Δ{portfolio_greeks.total_delta:+.2f} | "
-        f"Θ${portfolio_greeks.total_theta:+.2f}/day | "
-        f"Ν${portfolio_greeks.total_vega:+.2f}/1%IV",
+        "== ACTIVE WHEEL POSITIONS ==",
+        f"Open CSPs: {len(csps)}  |  Open CCs: {len(ccs)}  |  Other: {len(other)}",
         "",
     ]
+
     for p in positions:
-        pl_str = f"${p.current_pl:+,.2f} ({p.pl_pct:+.1f}%)" if p.current_pl is not None else "N/A"
-        captured = f"{p.profit_captured_pct:.0f}% of max profit" if p.profit_captured_pct is not None else ""
-        g = p.current_greeks or {}
+        pl_str = f"${p.current_pl:+,.2f}" if p.current_pl is not None else "N/A"
+        pct = f"{p.profit_captured_pct:.0f}% captured" if p.profit_captured_pct is not None else ""
         lines.append(
-            f"[{p.id}] {p.symbol} {p.spread_type} {p.buy_strike}/{p.sell_strike} "
-            f"exp {p.expiration_date} DTE:{p.dte} | "
-            f"P&L: {pl_str} {captured} | "
-            f"Δ{g.get('net_delta', 0):+.2f} Θ${g.get('net_theta', 0):+.2f}/day"
+            f"  [{p.id}] {p.symbol} {p.spread_type}  "
+            f"strike={p.sell_strike}  exp={p.expiration_date}  DTE:{p.dte}  "
+            f"P&L:{pl_str}  {pct}"
         )
     return "\n".join(lines)
 
 
 def _format_active_positions_detailed(positions: list[OptionsPosition]) -> str:
+    """Full detail for Pass 2 decision-making."""
     if not positions:
         return "(none)"
+
     lines = []
     for p in positions:
         pl_pct = f"{p.profit_captured_pct:.0f}%" if p.profit_captured_pct is not None else "?"
+        pl_abs = f"${p.current_pl:+,.2f}" if p.current_pl is not None else "?"
+
+        if p.spread_type == "CASH_SECURED_PUT":
+            # CSP: we only sold the put (sell_strike is the put strike)
+            leg_desc = f"Short {p.sell_strike}P"
+            cost_desc = f"Premium collected: ${p.entry_debit:.2f}/share"
+        elif p.spread_type == "COVERED_CALL":
+            # CC: we own stock and sold a call
+            leg_desc = f"Short {p.sell_strike}C"
+            cost_desc = f"Stock cost basis: ${p.buy_strike:.2f}  Call premium: ${p.entry_debit:.2f}/share"
+        else:
+            leg_desc = f"Buy {p.buy_strike} / Sell {p.sell_strike}"
+            cost_desc = f"Entry debit: ${p.entry_debit:.2f}"
+
         lines.append(
             f"ID:{p.id} | {p.symbol} {p.spread_type} | "
-            f"Buy {p.buy_strike}{p.buy_option_type[0].upper()} / "
-            f"Sell {p.sell_strike}{p.sell_option_type[0].upper()} | "
-            f"Exp:{p.expiration_date} DTE:{p.dte} | "
-            f"Entry debit:${p.entry_debit:.2f} | "
-            f"Max profit:${p.max_profit:.2f} Max loss:${p.max_loss:.2f} | "
-            f"Profit captured: {pl_pct}"
+            f"{leg_desc} | Exp:{p.expiration_date} DTE:{p.dte} | "
+            f"{cost_desc} | "
+            f"Max profit:${p.max_profit:.2f} | "
+            f"P&L:{pl_abs} ({pl_pct} of max)"
         )
     return "\n".join(lines)
 
@@ -224,8 +286,16 @@ def _format_market_with_iv(
     for sym, data in market_data.items():
         price = data.get("price", 0)
         chg = data.get("change_pct", 0)
+        w52h = data.get("52w_high", 0)
+        w52l = data.get("52w_low", 0)
         iv_pct = iv_data.get(sym)
         iv_str = f"IV-pct:{iv_pct:.0f}%" if iv_pct is not None else "IV:N/A"
+
+        # Distance from 52-week low (potential support proxy)
+        dist_low = ""
+        if w52l and price:
+            pct_above_low = (price - w52l) / w52l * 100
+            dist_low = f"+{pct_above_low:.1f}%↑52wLow"
 
         sig = technical_signals.get(sym)
         tech_str = ""
@@ -239,17 +309,22 @@ def _format_market_with_iv(
             if interp:
                 tech_str += f" | {interp}"
 
-        lines.append(f"  {sym}: ${price:.2f} ({chg:+.2f}%) {iv_str} | {tech_str}")
+        lines.append(
+            f"  {sym}: ${price:.2f} ({chg:+.2f}%) {iv_str} {dist_low} | {tech_str}"
+        )
     return "\n".join(lines) if lines else "(no data)"
 
 
-def _format_options_risk_rules(risk_profile: dict) -> str:
+def _format_wheel_risk_rules(risk_profile: dict) -> str:
     return (
-        f"Max portfolio delta: ±{risk_profile.get('max_portfolio_delta_pct', 15)}% of account\n"
-        f"Max open spreads: {risk_profile.get('max_open_spreads', 5)}\n"
-        f"Max per spread: {risk_profile.get('max_allocation_per_spread_pct', 10)}% of cash\n"
+        f"Max open CSP positions: {risk_profile.get('max_open_csps', 3)}\n"
+        f"Max open CC positions per symbol: {risk_profile.get('max_ccs_per_symbol', 2)}\n"
         f"Min cash reserve: {risk_profile.get('min_cash_pct', 40)}% of account\n"
-        f"Auto-close if DTE ≤ {risk_profile.get('auto_close_dte', 7)}\n"
-        f"Take profit at {risk_profile.get('take_profit_pct', 75)}% of max profit\n"
-        f"Stop loss at {risk_profile.get('stop_loss_pct', 50)}% of max loss"
+        f"CSP target delta: ~{risk_profile.get('csp_target_delta', 0.30)}\n"
+        f"CSP DTE range: {risk_profile.get('csp_dte_min', 21)}-{risk_profile.get('csp_dte_max', 45)} days\n"
+        f"CC target delta: ~{risk_profile.get('cc_target_delta', 0.25)}\n"
+        f"CC DTE range: {risk_profile.get('cc_dte_min', 14)}-{risk_profile.get('cc_dte_max', 30)} days\n"
+        f"No CSP within {risk_profile.get('earnings_blackout_days', 5)} days of earnings\n"
+        f"CC strike must be ≥ stock cost basis (no loss-locking)\n"
+        f"Early close if ≥{risk_profile.get('take_profit_pct', 50)}% of premium captured"
     )

@@ -1,28 +1,50 @@
-"""Execute options spread trades: SQLite position tracking + Ghostfolio cash flows."""
+"""Execute Wheel Strategy trades: SQLite position tracking + Ghostfolio cash flows.
+
+Handles:
+  execute_sell_csp()  — open a cash-secured put
+  execute_sell_cc()   — open a covered call against an assigned stock
+  execute_close()     — buy back an existing CSP or CC position
+  execute_closes()    — bulk-close convenience wrapper (used by main.py)
+  execute_opens()     — bulk-open wrapper; routes SELL_CSP vs SELL_CC
+  execute_rolls()     — no-op for wheel (returns empty list, required by main.py)
+  update_active_positions() — refresh DTE / P&L for held positions
+
+Ghostfolio integration:
+  CSP open  → BUY  "WHEEL-{SYM}-CSP-{YYYYMMDD}-{strike}P"  unit_price=premium
+  CC  open  → BUY  "WHEEL-{SYM}-CC-{YYYYMMDD}-{strike}C"   unit_price=premium
+  Close     → SELL same symbol, unit_price=close_value
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 
 import structlog
 
 from ..ghostfolio_client import GhostfolioClient
 from ..market_data import MarketDataProvider
-from .data import get_option_chain, get_current_option_price
-from .decision_parser import CloseInstruction, OpenInstruction, RollInstruction
-from .greeks import calculate_spread_greeks
+from .data import get_current_option_price
 from .positions import OptionsPosition, OptionsPositionTracker
-from .selector import SelectedSpread, select_spread
+# Import from deployed module names.
+# When placed in the options package, adjust these to match actual filenames:
+#   wheel_opt_parser.py  → decision_parser.py  (or keep as wheel_decision_parser.py)
+#   wheel_opt_selector.py → selector.py        (or keep as wheel_selector.py)
+from .decision_parser import WheelAction
+from .selector import SelectedCSP, SelectedCC, select_csp, select_cc
 
 logger = structlog.get_logger()
 
 
+# ---------------------------------------------------------------------------
+# Result dataclass (same shape as original OptionsTradeResult)
+# ---------------------------------------------------------------------------
+
 @dataclass
 class OptionsTradeResult:
-    action: str              # "OPEN", "CLOSE", "ROLL", "UPDATE"
+    action: str              # "OPEN_CSP" | "OPEN_CC" | "CLOSE" | "UPDATE" | "ROLL"
     symbol: str
-    spread_type: str
+    spread_type: str         # "CASH_SECURED_PUT" | "COVERED_CALL"
     position_id: int | None
     success: bool
     realized_pl: float | None = None
@@ -30,8 +52,12 @@ class OptionsTradeResult:
     ghostfolio_order_id: str | None = None
 
 
+# ---------------------------------------------------------------------------
+# Executor
+# ---------------------------------------------------------------------------
+
 class OptionsExecutor:
-    """Execute open/close/roll decisions for options spreads."""
+    """Execute open/close decisions for wheel strategy positions."""
 
     def __init__(
         self,
@@ -41,325 +67,464 @@ class OptionsExecutor:
         account_id: str,
         risk_profile: dict,
         dry_run: bool = False,
+        account_key: str | None = None,
     ):
         self.ghostfolio = ghostfolio
         self.market_data = market_data
         self.tracker = tracker
         self.account_id = account_id
+        self.account_key = account_key or account_id
         self.risk_profile = risk_profile
         self.dry_run = dry_run
 
-    # ── Public interface ──────────────────────────────────────────────────────
-
-    def execute_closes(
-        self,
-        closes: list[CloseInstruction],
-        active_positions: list[OptionsPosition],
-    ) -> list[OptionsTradeResult]:
-        results = []
-        pos_map = {p.id: p for p in active_positions}
-        for close in closes:
-            pos = pos_map.get(close.position_id)
-            if pos is None:
-                results.append(OptionsTradeResult(
-                    action="CLOSE", symbol="?", spread_type="?",
-                    position_id=close.position_id, success=False,
-                    error=f"Position {close.position_id} not found",
-                ))
-                continue
-            results.append(self._close_position(pos, close.reason))
-        return results
+    # ── Public interface (called by main.py) ──────────────────────────────────
 
     def execute_opens(
         self,
-        opens: list[OpenInstruction],
+        opens: list[WheelAction],
+        active_positions: list[OptionsPosition] | None = None,
     ) -> list[OptionsTradeResult]:
+        """Route each open action to the correct executor (CSP or CC).
+
+        Args:
+            opens:            Approved open actions from the risk manager.
+            active_positions: Current active positions; passed to execute_sell_cc()
+                              so it can look up the parent CSP cost basis.
+        """
         results = []
-        for inst in opens:
-            results.append(self._open_position(inst))
+        for action in opens:
+            if action.type == "SELL_CSP":
+                results.append(self.execute_sell_csp(action))
+            elif action.type == "SELL_CC":
+                results.append(self.execute_sell_cc(action, active_positions=active_positions))
+            else:
+                logger.warning("wheel_executor_unknown_open_type", type=action.type, symbol=action.symbol)
+        return results
+
+    def execute_closes(
+        self,
+        closes: list[WheelAction],
+        active_positions: list[OptionsPosition],
+    ) -> list[OptionsTradeResult]:
+        """Close a list of positions (LLM-requested or forced)."""
+        results = []
+        pos_map = {p.id: p for p in active_positions}
+        for action in closes:
+            pid = action.position_id
+            pos = pos_map.get(pid) if pid is not None else None
+            if pos is None:
+                results.append(OptionsTradeResult(
+                    action="CLOSE", symbol=action.symbol, spread_type="?",
+                    position_id=pid, success=False,
+                    error=f"Position {pid} not found in active positions",
+                ))
+                continue
+            results.append(self._close_position(pos, action.reason))
         return results
 
     def execute_rolls(
         self,
-        rolls: list[RollInstruction],
+        rolls: list,
         active_positions: list[OptionsPosition],
     ) -> list[OptionsTradeResult]:
-        """Roll = close existing + open new with updated direction."""
-        results = []
-        pos_map = {p.id: p for p in active_positions}
-        for roll in rolls:
-            pos = pos_map.get(roll.position_id)
-            if pos is None:
-                results.append(OptionsTradeResult(
-                    action="ROLL", symbol="?", spread_type="?",
-                    position_id=roll.position_id, success=False,
-                    error=f"Position {roll.position_id} not found for roll",
-                ))
-                continue
-            # Close old leg
-            close_result = self._close_position(pos, f"ROLLED → {roll.spread_type}")
-            results.append(close_result)
-            if not close_result.success:
-                continue
-            # Open new leg
-            new_inst = OpenInstruction(
-                symbol=pos.symbol,
-                direction=roll.direction,
-                spread_type=roll.spread_type,
-                contracts=pos.contracts,
-                thesis=f"Roll from {pos.spread_type}",
-            )
-            open_result = self._open_position(new_inst)
-            results.append(open_result)
-        return results
+        """Wheel strategy has no roll concept — always returns empty list."""
+        if rolls:
+            logger.warning("wheel_executor_rolls_ignored", count=len(rolls))
+        return []
 
     def update_active_positions(
         self,
         active_positions: list[OptionsPosition],
     ) -> list[OptionsTradeResult]:
-        """Refresh current_value and Greeks for all held positions."""
+        """Refresh DTE, current value, and P&L for all held positions."""
         results = []
         today = date.today()
         for pos in active_positions:
-            result = self._update_position_state(pos, today)
-            results.append(result)
+            results.append(self._update_position_state(pos, today))
         return results
 
-    # ── Internal: open ────────────────────────────────────────────────────────
+    # ── CSP execution ─────────────────────────────────────────────────────────
 
-    def _open_position(self, inst: OpenInstruction) -> OptionsTradeResult:
+    def execute_sell_csp(self, action: WheelAction) -> OptionsTradeResult:
+        """Select strike and record a new cash-secured put."""
         try:
-            # 1. Select strikes
-            spread = select_spread(inst.symbol, inst.spread_type, self.risk_profile)
-            if spread is None:
+            target_delta = self.risk_profile.get("csp_target_delta", 0.30)
+            dte_min = self.risk_profile.get("csp_dte_min", 21)
+            dte_max = self.risk_profile.get("csp_dte_max", 45)
+
+            csp = select_csp(
+                symbol=action.symbol,
+                contracts=action.contracts,
+                target_delta=target_delta,
+                dte_min=dte_min,
+                dte_max=dte_max,
+            )
+            if csp is None:
                 return OptionsTradeResult(
-                    action="OPEN", symbol=inst.symbol, spread_type=inst.spread_type,
-                    position_id=None, success=False,
-                    error="Strike selection failed (no suitable chain)",
+                    action="OPEN_CSP", symbol=action.symbol,
+                    spread_type="CASH_SECURED_PUT", position_id=None,
+                    success=False, error="CSP strike selection failed (no suitable chain)",
                 )
 
-            # 2. Calculate spread Greeks
-            greeks = calculate_spread_greeks(
-                spread_type=spread.spread_type,
-                underlying_price=spread.underlying_price,
-                buy_strike=spread.buy_strike,
-                sell_strike=spread.sell_strike,
-                expiration_date=spread.expiration,
-                buy_iv=spread.buy_iv,
-                sell_iv=spread.sell_iv,
-                buy_premium=spread.buy_premium,
-                sell_premium=spread.sell_premium,
-                contracts=inst.contracts,
-            )
-
-            max_profit = spread.max_profit_per_spread * inst.contracts
-            max_loss = spread.max_loss_per_spread * inst.contracts
-
-            # 3. Ghostfolio cash flow (debit paid)
+            # Ghostfolio: record premium collected as BUY of synthetic asset
             ghostfolio_order_id = None
             if not self.dry_run:
-                ghostfolio_order_id = self._ghostfolio_open(spread, inst.contracts)
+                ghostfolio_order_id = self._ghostfolio_open_csp(csp, action.contracts)
             else:
                 ghostfolio_order_id = "DRY_RUN"
                 logger.info(
-                    "options_dry_run_open",
-                    symbol=inst.symbol, spread_type=inst.spread_type,
-                    buy_strike=spread.buy_strike, sell_strike=spread.sell_strike,
-                    net_debit=spread.net_debit, contracts=inst.contracts,
+                    "wheel_dry_run_sell_csp",
+                    symbol=csp.symbol, strike=csp.strike,
+                    expiration=csp.expiration, premium=csp.premium,
+                    contracts=action.contracts,
                 )
 
-            # 4. SQLite record
-            greeks_dict = {}
-            if greeks:
-                greeks_dict = {
-                    "net_delta": greeks.net_delta,
-                    "net_gamma": greeks.net_gamma,
-                    "net_theta": greeks.net_theta,
-                    "net_vega": greeks.net_vega,
-                }
+            # Max profit = premium collected × 100 × contracts
+            max_profit = round(csp.premium * 100 * action.contracts, 2)
+            # Max loss = strike price × 100 × contracts (stock falls to 0)
+            max_loss = round(csp.strike * 100 * action.contracts, 2)
 
+            # SQLite record — we store the CSP as a single-leg "spread":
+            #   sell_strike = put strike  (the leg we sold)
+            #   sell_option_type = "put"
+            #   buy_strike = 0 (no long leg)
+            #   entry_debit = negative (we received premium, not paid debit)
             pos_id = self.tracker.open_position(
-                account_key=self.account_id,
-                symbol=spread.symbol,
-                spread_type=spread.spread_type,
-                contracts=inst.contracts,
-                expiration_date=spread.expiration,
-                buy_strike=spread.buy_strike,
-                buy_option_type=spread.buy_option_type,
-                buy_premium=spread.buy_premium,
-                sell_strike=spread.sell_strike,
-                sell_option_type=spread.sell_option_type,
-                sell_premium=spread.sell_premium,
+                account_key=self.account_key,
+                symbol=csp.symbol,
+                spread_type="CASH_SECURED_PUT",
+                contracts=action.contracts,
+                expiration_date=csp.expiration,
+                buy_strike=0.0,          # no long leg
+                buy_option_type="put",
+                buy_premium=0.0,
+                sell_strike=csp.strike,
+                sell_option_type="put",
+                sell_premium=csp.premium,
                 max_profit=max_profit,
                 max_loss=max_loss,
-                entry_debit=spread.net_debit,
-                buy_contract_symbol=spread.buy_contract_symbol,
-                sell_contract_symbol=spread.sell_contract_symbol,
+                entry_debit=-csp.premium,   # negative = credit received
+                buy_contract_symbol=None,
+                sell_contract_symbol=csp.contract_symbol,
                 ghostfolio_order_id=ghostfolio_order_id,
             )
 
-            # Set initial Greeks state
-            if greeks:
-                self.tracker.update_position(
-                    pos_id,
-                    current_value=spread.net_debit,
-                    current_pl=0.0,
-                    greeks=greeks_dict,
-                    dte=spread.dte,
-                )
+            # Initial state update (no P&L yet)
+            self.tracker.update_position(
+                pos_id,
+                current_value=csp.premium,
+                current_pl=0.0,
+                greeks={"net_delta": csp.delta, "net_gamma": 0.0,
+                        "net_theta": 0.0, "net_vega": 0.0},
+                dte=csp.dte,
+            )
 
             logger.info(
-                "options_opened",
-                pos_id=pos_id, symbol=spread.symbol, spread_type=spread.spread_type,
-                buy_strike=spread.buy_strike, sell_strike=spread.sell_strike,
-                net_debit=spread.net_debit, contracts=inst.contracts,
-                max_profit=max_profit, max_loss=max_loss,
+                "wheel_csp_opened",
+                pos_id=pos_id, symbol=csp.symbol,
+                strike=csp.strike, expiration=csp.expiration,
+                premium=csp.premium, delta=round(csp.delta, 3),
+                contracts=action.contracts, max_profit=max_profit,
             )
 
             return OptionsTradeResult(
-                action="OPEN", symbol=spread.symbol, spread_type=spread.spread_type,
+                action="OPEN_CSP", symbol=csp.symbol,
+                spread_type="CASH_SECURED_PUT",
                 position_id=pos_id, success=True,
                 ghostfolio_order_id=ghostfolio_order_id,
             )
 
         except Exception as e:
-            logger.error("options_open_failed", symbol=inst.symbol, error=str(e), exc_info=True)
+            logger.error("wheel_sell_csp_failed", symbol=action.symbol, error=str(e), exc_info=True)
             return OptionsTradeResult(
-                action="OPEN", symbol=inst.symbol, spread_type=inst.spread_type,
+                action="OPEN_CSP", symbol=action.symbol,
+                spread_type="CASH_SECURED_PUT",
                 position_id=None, success=False, error=str(e),
             )
 
-    # ── Internal: close ───────────────────────────────────────────────────────
+    # ── CC execution ──────────────────────────────────────────────────────────
+
+    def execute_sell_cc(
+        self,
+        action: WheelAction,
+        active_positions: list[OptionsPosition] | None = None,
+    ) -> OptionsTradeResult:
+        """Select call strike and record a new covered call.
+
+        The cost_basis is read from the referenced parent position (position_id).
+        If position_id is None or the position is not found, the current stock
+        price is used as a conservative proxy.
+        """
+        try:
+            cost_basis = 0.0
+            if action.position_id is not None and active_positions:
+                parent = next(
+                    (p for p in active_positions if p.id == action.position_id), None
+                )
+                if parent is not None:
+                    # For an assigned CSP, sell_strike = the put strike = cost basis
+                    cost_basis = parent.sell_strike or 0.0
+
+            target_delta = self.risk_profile.get("cc_target_delta", 0.25)
+            dte_min = self.risk_profile.get("cc_dte_min", 14)
+            dte_max = self.risk_profile.get("cc_dte_max", 30)
+
+            cc = select_cc(
+                symbol=action.symbol,
+                contracts=action.contracts,
+                cost_basis=cost_basis,
+                target_delta=target_delta,
+                dte_min=dte_min,
+                dte_max=dte_max,
+            )
+            if cc is None:
+                return OptionsTradeResult(
+                    action="OPEN_CC", symbol=action.symbol,
+                    spread_type="COVERED_CALL", position_id=None,
+                    success=False, error="CC strike selection failed (no suitable chain)",
+                )
+
+            # Ghostfolio
+            ghostfolio_order_id = None
+            if not self.dry_run:
+                ghostfolio_order_id = self._ghostfolio_open_cc(cc, action.contracts)
+            else:
+                ghostfolio_order_id = "DRY_RUN"
+                logger.info(
+                    "wheel_dry_run_sell_cc",
+                    symbol=cc.symbol, strike=cc.strike,
+                    expiration=cc.expiration, premium=cc.premium,
+                    cost_basis=cc.cost_basis, contracts=action.contracts,
+                )
+
+            max_profit = round(cc.premium * 100 * action.contracts, 2)
+            # Max loss on the CC itself is theoretically unlimited (uncapped upside capped by
+            # the call strike).  For record-keeping we store the potential uplift vs cost basis.
+            max_loss = 0.0   # stock already owned; CC only caps upside
+
+            # For covered call, buy_strike stores the stock cost_basis for reference
+            pos_id = self.tracker.open_position(
+                account_key=self.account_key,
+                symbol=cc.symbol,
+                spread_type="COVERED_CALL",
+                contracts=action.contracts,
+                expiration_date=cc.expiration,
+                buy_strike=cost_basis,       # stock cost basis
+                buy_option_type="stock",
+                buy_premium=0.0,
+                sell_strike=cc.strike,
+                sell_option_type="call",
+                sell_premium=cc.premium,
+                max_profit=max_profit,
+                max_loss=max_loss,
+                entry_debit=-cc.premium,     # negative = credit received
+                buy_contract_symbol=None,
+                sell_contract_symbol=cc.contract_symbol,
+                ghostfolio_order_id=ghostfolio_order_id,
+            )
+
+            self.tracker.update_position(
+                pos_id,
+                current_value=cc.premium,
+                current_pl=0.0,
+                greeks={"net_delta": cc.delta, "net_gamma": 0.0,
+                        "net_theta": 0.0, "net_vega": 0.0},
+                dte=cc.dte,
+            )
+
+            logger.info(
+                "wheel_cc_opened",
+                pos_id=pos_id, symbol=cc.symbol,
+                strike=cc.strike, expiration=cc.expiration,
+                premium=cc.premium, cost_basis=cost_basis,
+                delta=round(cc.delta, 3), contracts=action.contracts,
+                parent_position_id=action.position_id,
+            )
+
+            return OptionsTradeResult(
+                action="OPEN_CC", symbol=cc.symbol,
+                spread_type="COVERED_CALL",
+                position_id=pos_id, success=True,
+                ghostfolio_order_id=ghostfolio_order_id,
+            )
+
+        except Exception as e:
+            logger.error("wheel_sell_cc_failed", symbol=action.symbol, error=str(e), exc_info=True)
+            return OptionsTradeResult(
+                action="OPEN_CC", symbol=action.symbol,
+                spread_type="COVERED_CALL",
+                position_id=None, success=False, error=str(e),
+            )
+
+    # ── Close execution ───────────────────────────────────────────────────────
 
     def _close_position(self, pos: OptionsPosition, reason: str) -> OptionsTradeResult:
+        """Buy back an existing CSP or CC position."""
         try:
-            # 1. Get current spread value (mid of each leg)
-            close_value = self._get_current_spread_value(pos)
+            # Current mid-price of the sold option
+            close_value = get_current_option_price(
+                pos.symbol,
+                pos.sell_option_type,
+                pos.sell_strike,
+                pos.expiration_date,
+            )
             if close_value is None:
-                close_value = pos.current_value or pos.entry_debit
+                # Fall back to recorded current value or entry premium
+                close_value = pos.current_value or abs(pos.entry_debit or 0)
 
-            # 2. Ghostfolio cash flow (proceeds received)
+            # Ghostfolio: record buy-back as SELL of the synthetic asset
             ghostfolio_order_id = None
             if not self.dry_run:
                 ghostfolio_order_id = self._ghostfolio_close(pos, close_value)
             else:
                 ghostfolio_order_id = "DRY_RUN"
                 logger.info(
-                    "options_dry_run_close",
+                    "wheel_dry_run_close",
                     pos_id=pos.id, symbol=pos.symbol,
+                    spread_type=pos.spread_type,
                     close_value=close_value, reason=reason,
                 )
 
-            # 3. SQLite update
             realized_pl = self.tracker.close_position(
                 pos.id, close_value, reason, ghostfolio_order_id,
             )
 
+            logger.info(
+                "wheel_position_closed",
+                pos_id=pos.id, symbol=pos.symbol,
+                spread_type=pos.spread_type,
+                close_value=close_value, realized_pl=realized_pl,
+                reason=reason,
+            )
+
             return OptionsTradeResult(
-                action="CLOSE", symbol=pos.symbol, spread_type=pos.spread_type,
-                position_id=pos.id, success=True, realized_pl=realized_pl,
+                action="CLOSE", symbol=pos.symbol,
+                spread_type=pos.spread_type,
+                position_id=pos.id, success=True,
+                realized_pl=realized_pl,
                 ghostfolio_order_id=ghostfolio_order_id,
             )
 
         except Exception as e:
-            logger.error("options_close_failed", pos_id=pos.id, error=str(e), exc_info=True)
+            logger.error("wheel_close_failed", pos_id=pos.id, error=str(e), exc_info=True)
             return OptionsTradeResult(
-                action="CLOSE", symbol=pos.symbol, spread_type=pos.spread_type,
+                action="CLOSE", symbol=pos.symbol,
+                spread_type=pos.spread_type,
                 position_id=pos.id, success=False, error=str(e),
             )
 
-    # ── Internal: update state ────────────────────────────────────────────────
+    # ── State update ──────────────────────────────────────────────────────────
 
-    def _update_position_state(self, pos: OptionsPosition, today: date) -> OptionsTradeResult:
+    def _update_position_state(
+        self, pos: OptionsPosition, today: date
+    ) -> OptionsTradeResult:
+        """Refresh DTE, current premium value, and P&L for a held position."""
         try:
-            from datetime import datetime as dt
-            exp_date = dt.strptime(pos.expiration_date, "%Y-%m-%d").date()
+            exp_date = datetime.strptime(pos.expiration_date, "%Y-%m-%d").date()
             dte = max((exp_date - today).days, 0)
 
-            # Check if expired
             if dte == 0:
-                logger.info("options_position_expired", pos_id=pos.id, symbol=pos.symbol)
+                logger.info("wheel_position_expired", pos_id=pos.id, symbol=pos.symbol)
                 self.tracker.expire_position(pos.id)
                 return OptionsTradeResult(
-                    action="UPDATE", symbol=pos.symbol, spread_type=pos.spread_type,
+                    action="UPDATE", symbol=pos.symbol,
+                    spread_type=pos.spread_type,
                     position_id=pos.id, success=True,
                 )
 
-            # Current spread value
-            current_value = self._get_current_spread_value(pos)
+            current_value = get_current_option_price(
+                pos.symbol,
+                pos.sell_option_type,
+                pos.sell_strike,
+                pos.expiration_date,
+            )
             if current_value is None:
                 return OptionsTradeResult(
-                    action="UPDATE", symbol=pos.symbol, spread_type=pos.spread_type,
-                    position_id=pos.id, success=False, error="Could not fetch current prices",
-                )
-
-            current_pl = round((current_value - pos.entry_debit) * pos.contracts * 100, 2)
-
-            # Recalculate Greeks
-            underlying_price = self.market_data.get_current_price(pos.symbol)
-            greeks_dict = {}
-            if underlying_price:
-                t = max(dte / 365.0, 0.001)
-                from .data import get_current_option_price as _gop
-                buy_iv = _get_iv_from_chain(pos.symbol, pos.buy_option_type, pos.buy_strike, pos.expiration_date)
-                sell_iv = _get_iv_from_chain(pos.symbol, pos.sell_option_type, pos.sell_strike, pos.expiration_date)
-
-                greeks = calculate_spread_greeks(
+                    action="UPDATE", symbol=pos.symbol,
                     spread_type=pos.spread_type,
-                    underlying_price=underlying_price,
-                    buy_strike=pos.buy_strike,
-                    sell_strike=pos.sell_strike,
-                    expiration_date=pos.expiration_date,
-                    buy_iv=buy_iv or 0.25,
-                    sell_iv=sell_iv or 0.25,
-                    buy_premium=0,
-                    sell_premium=0,
-                    contracts=pos.contracts,
+                    position_id=pos.id, success=False,
+                    error="Could not fetch current option price",
                 )
-                if greeks:
-                    greeks_dict = {
-                        "net_delta": greeks.net_delta,
-                        "net_gamma": greeks.net_gamma,
-                        "net_theta": greeks.net_theta,
-                        "net_vega": greeks.net_vega,
-                    }
 
-            self.tracker.update_position(pos.id, current_value, current_pl, greeks_dict, dte)
+            # For short options: P&L = (entry_premium - current_value) × 100 × contracts
+            # entry_debit is stored as negative (credit received), so:
+            entry_premium = abs(pos.entry_debit or 0)
+            current_pl = round(
+                (entry_premium - current_value) * pos.contracts * 100, 2
+            )
+
+            self.tracker.update_position(
+                pos.id,
+                current_value=current_value,
+                current_pl=current_pl,
+                greeks={},   # Greeks update deferred (expensive; done by caller if needed)
+                dte=dte,
+            )
+
             return OptionsTradeResult(
-                action="UPDATE", symbol=pos.symbol, spread_type=pos.spread_type,
+                action="UPDATE", symbol=pos.symbol,
+                spread_type=pos.spread_type,
                 position_id=pos.id, success=True,
             )
 
         except Exception as e:
-            logger.error("options_update_failed", pos_id=pos.id, error=str(e))
+            logger.error("wheel_update_failed", pos_id=pos.id, error=str(e))
             return OptionsTradeResult(
-                action="UPDATE", symbol=pos.symbol, spread_type=pos.spread_type,
+                action="UPDATE", symbol=pos.symbol,
+                spread_type=pos.spread_type,
                 position_id=pos.id, success=False, error=str(e),
             )
 
-    # ── Internal: Ghostfolio ─────────────────────────────────────────────────
+    # ── Ghostfolio helpers ────────────────────────────────────────────────────
 
-    def _ghostfolio_open(self, spread: SelectedSpread, contracts: int) -> str | None:
-        """Record cash outflow (debit paid) in Ghostfolio as MANUAL BUY."""
+    def _ghostfolio_open_csp(self, csp: SelectedCSP, contracts: int) -> str | None:
+        """Record CSP premium collected in Ghostfolio as a BUY of a synthetic asset."""
         try:
-            symbol = f"OPT-{spread.symbol}-{spread.spread_type}-{spread.expiration.replace('-', '')}"
+            exp_compact = csp.expiration.replace("-", "")
+            symbol = f"WHEEL-{csp.symbol}-CSP-{exp_compact}-{int(csp.strike)}P"
             result = self.ghostfolio.create_order(
                 account_id=self.account_id,
                 symbol=symbol,
                 order_type="BUY",
                 quantity=float(contracts),
-                unit_price=spread.net_debit,
+                unit_price=csp.premium,
                 data_source="MANUAL",
             )
             return result.get("id") if isinstance(result, dict) else None
         except Exception as e:
-            logger.error("ghostfolio_options_open_failed", error=str(e))
+            logger.error("ghostfolio_csp_open_failed", symbol=csp.symbol, error=str(e))
+            return None
+
+    def _ghostfolio_open_cc(self, cc: SelectedCC, contracts: int) -> str | None:
+        """Record CC premium collected in Ghostfolio as a BUY of a synthetic asset."""
+        try:
+            exp_compact = cc.expiration.replace("-", "")
+            symbol = f"WHEEL-{cc.symbol}-CC-{exp_compact}-{int(cc.strike)}C"
+            result = self.ghostfolio.create_order(
+                account_id=self.account_id,
+                symbol=symbol,
+                order_type="BUY",
+                quantity=float(contracts),
+                unit_price=cc.premium,
+                data_source="MANUAL",
+            )
+            return result.get("id") if isinstance(result, dict) else None
+        except Exception as e:
+            logger.error("ghostfolio_cc_open_failed", symbol=cc.symbol, error=str(e))
             return None
 
     def _ghostfolio_close(self, pos: OptionsPosition, close_value: float) -> str | None:
-        """Record cash inflow (proceeds) in Ghostfolio as MANUAL SELL."""
+        """Record position close (buy-back) as a SELL in Ghostfolio."""
         try:
-            symbol = f"OPT-{pos.symbol}-{pos.spread_type}-{pos.expiration_date.replace('-', '')}"
+            exp_compact = pos.expiration_date.replace("-", "")
+            if pos.spread_type == "CASH_SECURED_PUT":
+                symbol = f"WHEEL-{pos.symbol}-CSP-{exp_compact}-{int(pos.sell_strike)}P"
+            elif pos.spread_type == "COVERED_CALL":
+                symbol = f"WHEEL-{pos.symbol}-CC-{exp_compact}-{int(pos.sell_strike)}C"
+            else:
+                # Fallback for legacy spread_type values
+                symbol = f"OPT-{pos.symbol}-{pos.spread_type}-{exp_compact}"
+
             result = self.ghostfolio.create_order(
                 account_id=self.account_id,
                 symbol=symbol,
@@ -370,39 +535,5 @@ class OptionsExecutor:
             )
             return result.get("id") if isinstance(result, dict) else None
         except Exception as e:
-            logger.error("ghostfolio_options_close_failed", error=str(e))
+            logger.error("ghostfolio_close_failed", pos_id=pos.id, error=str(e))
             return None
-
-    # ── Internal: pricing ─────────────────────────────────────────────────────
-
-    def _get_current_spread_value(self, pos: OptionsPosition) -> float | None:
-        """Get current mid-price of the spread (buy leg - sell leg)."""
-        buy_price = get_current_option_price(
-            pos.symbol, pos.buy_option_type, pos.buy_strike, pos.expiration_date,
-        )
-        sell_price = get_current_option_price(
-            pos.symbol, pos.sell_option_type, pos.sell_strike, pos.expiration_date,
-        )
-        if buy_price is None or sell_price is None:
-            return None
-        return round(buy_price - sell_price, 2)
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _get_iv_from_chain(
-    symbol: str, option_type: str, strike: float, expiration: str
-) -> float | None:
-    """Fetch current IV for a specific contract from yfinance chain."""
-    try:
-        import yfinance as yf
-        ticker = yf.Ticker(symbol)
-        chain = ticker.option_chain(expiration)
-        df = chain.calls if option_type == "call" else chain.puts
-        row = df[df["strike"] == strike]
-        if row.empty:
-            return None
-        iv = float(row["impliedVolatility"].iloc[0])
-        return iv if iv > 0 else None
-    except Exception:
-        return None
