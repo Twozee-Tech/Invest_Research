@@ -10,6 +10,7 @@ import structlog
 from .decision_parser import TradeAction
 from .ghostfolio_client import GhostfolioClient
 from .market_data import MarketDataProvider
+from .transaction_costs import calculate_cost
 
 logger = structlog.get_logger()
 
@@ -22,6 +23,7 @@ class TradeResult:
     unit_price: float = 0.0
     total_cost: float = 0.0
     ghostfolio_order_id: str = ""
+    fee: float = 0.0
     error: str = ""
 
 
@@ -33,10 +35,12 @@ class TradeExecutor:
         ghostfolio: GhostfolioClient,
         market_data: MarketDataProvider,
         dry_run: bool = False,
+        broker_cost_model: str = "",
     ):
         self.ghostfolio = ghostfolio
         self.market_data = market_data
         self.dry_run = dry_run
+        self.broker_cost_model = broker_cost_model
 
     def execute_trades(
         self,
@@ -76,6 +80,12 @@ class TradeExecutor:
 
             total_cost = quantity * price
 
+            # Transaction fee (0.0 when no cost model configured)
+            fee = (
+                calculate_cost(self.broker_cost_model, quantity, price)
+                if self.broker_cost_model else 0.0
+            )
+
             if self.dry_run:
                 logger.info(
                     "trade_dry_run",
@@ -84,6 +94,7 @@ class TradeExecutor:
                     quantity=round(quantity, 6),
                     price=price,
                     total=round(total_cost, 2),
+                    fee=round(fee, 4),
                 )
                 return TradeResult(
                     action=action,
@@ -92,6 +103,7 @@ class TradeExecutor:
                     unit_price=price,
                     total_cost=total_cost,
                     ghostfolio_order_id="DRY_RUN",
+                    fee=fee,
                 )
 
             # Create order in Ghostfolio
@@ -102,6 +114,7 @@ class TradeExecutor:
                 quantity=round(quantity, 6),
                 unit_price=price,
                 date=datetime.now(timezone.utc),
+                fee=fee,
             )
 
             order_id = order.get("id", "unknown")
@@ -112,6 +125,7 @@ class TradeExecutor:
                 quantity=round(quantity, 6),
                 price=price,
                 total=round(total_cost, 2),
+                fee=round(fee, 4),
                 order_id=order_id,
             )
 
@@ -122,6 +136,7 @@ class TradeExecutor:
                 unit_price=price,
                 total_cost=total_cost,
                 ghostfolio_order_id=order_id,
+                fee=fee,
             )
 
         except Exception as e:

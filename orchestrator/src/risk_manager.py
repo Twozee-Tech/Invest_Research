@@ -10,6 +10,7 @@ import structlog
 from .decision_parser import TradeAction, DecisionResult
 from .portfolio_state import PortfolioState
 from .market_data import StockQuote
+from .transaction_costs import calculate_cost
 
 logger = structlog.get_logger()
 
@@ -59,6 +60,7 @@ class RiskManager:
         self.max_trades_per_cycle = risk_profile.get("max_trades_per_cycle", 5)
         self.stop_loss_pct = risk_profile.get("stop_loss_pct", -15)
         self.min_holding_days = risk_profile.get("min_holding_days", 14)
+        self.min_holding_hours = risk_profile.get("min_holding_hours", 0)
         self.max_sector_exposure_pct = risk_profile.get("max_sector_exposure_pct", 40)
         self._sim_date = sim_date  # None = use datetime.now()
 
@@ -280,20 +282,24 @@ class RiskManager:
             check.modified = True
             check.modification_reason = "Trimmed to actual position value"
 
-        # Rule: Minimum holding period
-        if position.first_buy_date and self.min_holding_days > 0:
+        # Rule: Minimum holding period (days + hours combined)
+        min_hold_delta = timedelta(
+            days=self.min_holding_days,
+            hours=self.min_holding_hours,
+        )
+        if position.first_buy_date and min_hold_delta.total_seconds() > 0:
             try:
                 buy_date = datetime.fromisoformat(position.first_buy_date.replace("Z", "+00:00"))
                 if self._sim_date:
                     # Backtest: compare dates as naive to avoid timezone issues
                     now = datetime.fromisoformat(self._sim_date.split("T")[0])
-                    days_held = (now - buy_date.replace(tzinfo=None)).days
+                    held_delta = now - buy_date.replace(tzinfo=None)
                 else:
-                    days_held = (datetime.now(buy_date.tzinfo) - buy_date).days
-                if days_held < self.min_holding_days:
+                    held_delta = datetime.now(buy_date.tzinfo) - buy_date
+                if held_delta < min_hold_delta:
                     check.approved = False
                     check.rejection_reason = (
-                        f"Held {days_held} days, minimum is {self.min_holding_days} days"
+                        f"Held {held_delta}, minimum is {min_hold_delta}"
                     )
                     return check
             except (ValueError, TypeError):
@@ -343,3 +349,67 @@ class RiskManager:
                     exit_condition="Emergency risk reduction",
                 ))
         return forced
+
+
+def filter_by_cost_breakeven(
+    actions: list[TradeAction],
+    portfolio: PortfolioState,
+    cost_model: str,
+    multiplier: float = 2.0,
+) -> tuple[list[TradeAction], list[dict]]:
+    """Filter out actions where transaction cost is too high to break even.
+
+    For each action, computes the broker fee and rejects those where the fee
+    exceeds ``1 / multiplier`` percent of the trade amount.  With the default
+    ``multiplier=2.0`` this means: reject if fee > 0.5% of trade value.
+
+    This standalone function is called only from ``run_intraday_cycle`` so
+    it does not affect the standard weekly/daily cycle flow.
+
+    Args:
+        actions: List of trade actions to filter.
+        portfolio: Current portfolio state (used to look up current prices).
+        cost_model: Broker identifier passed to ``calculate_cost``.
+        multiplier: Minimum required gain-to-cost ratio.  A multiplier of 2
+            means the trade must be able to earn at least 2× the fee to be
+            worthwhile.
+
+    Returns:
+        Tuple ``(approved, filtered_out)`` where ``filtered_out`` is a list of
+        dicts ``{action, reason, fee}``.
+    """
+    # Break-even threshold: reject if fee_pct > threshold
+    # e.g. multiplier=2 → reject if fee > 0.5% of trade amount
+    threshold_pct = 100.0 / multiplier  # percent
+
+    approved: list[TradeAction] = []
+    filtered_out: list[dict] = []
+
+    for action in actions:
+        # Estimate price: prefer live portfolio price, fall back to rough calc
+        pos = portfolio.get_position(action.symbol)
+        price = pos.current_price if pos else 0.0
+        if price <= 0 and action.amount_usd > 0:
+            price = action.amount_usd / 10  # rough fallback
+
+        quantity = action.amount_usd / price if price > 0 else 0.0
+        fee = calculate_cost(cost_model, quantity, price)
+        fee_pct = (fee / action.amount_usd * 100) if action.amount_usd > 0 else 0.0
+
+        if fee_pct * multiplier > threshold_pct:
+            reason = (
+                f"Fee ${fee:.2f} ({fee_pct:.2f}%) × {multiplier} "
+                f"exceeds {threshold_pct:.1f}% breakeven threshold"
+            )
+            filtered_out.append({"action": action, "reason": reason, "fee": fee})
+            logger.info(
+                "cost_breakeven_filtered",
+                symbol=action.symbol,
+                fee=round(fee, 4),
+                fee_pct=round(fee_pct, 3),
+                threshold_pct=threshold_pct,
+            )
+        else:
+            approved.append(action)
+
+    return approved, filtered_out

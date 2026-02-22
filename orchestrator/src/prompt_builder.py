@@ -16,6 +16,7 @@ def build_pass1_messages(
     decision_history: str,
     strategy_config: dict,
     earnings_text: str = "",
+    fundamentals_text: str = "",
 ) -> list[dict[str, str]]:
     """Build messages for Pass 1: Market Analysis.
 
@@ -29,7 +30,11 @@ def build_pass1_messages(
         "- Be specific and data-driven in your analysis.\n"
         "- Consider both technical indicators and fundamental news.\n"
         "- Assess the overall market regime (bull, bear, sideways, high volatility).\n"
-        "- Evaluate portfolio diversification and risk concentration.\n\n"
+        "- Evaluate portfolio diversification and risk concentration.\n"
+        "- For HELD positions: assess whether to stay (fundamental thesis intact?) "
+        "or exit (earnings miss, analyst downgrades, thesis broken?).\n"
+        "- For NEW opportunities: evaluate analyst consensus, growth trajectory, "
+        "and whether the setup warrants entry.\n\n"
         "You MUST respond with valid JSON matching this schema:\n"
         "{\n"
         '  "market_regime": "BULL_TREND" | "BEAR_TREND" | "SIDEWAYS" | "HIGH_VOLATILITY",\n'
@@ -105,6 +110,8 @@ def build_pass1_messages(
         "",
         news_text,
     ]
+    if fundamentals_text:
+        user_parts += ["", fundamentals_text]
     if earnings_text:
         user_parts += ["", earnings_text]
     user_parts += [
@@ -157,9 +164,15 @@ def build_pass2_messages(
         f"(= ${max_position_usd:,.0f} at current portfolio value).\n"
         f"  Before each BUY: existing_position_value + amount_usd MUST NOT exceed ${max_position_usd:,.0f}.\n"
         f"- Keep minimum {min_cash_pct}% cash reserve\n"
-        f"- Only trade symbols from the watchlist: {', '.join(watchlist)}\n"
+        f"- Trade any symbol from the market data provided — you are NOT limited to a fixed list.\n"
+        f"  Current universe: {', '.join(watchlist)}\n"
         "- You MUST justify every action with a specific thesis\n"
         "- If no good opportunities exist, it's OK to HOLD (empty actions list)\n\n"
+        "SYMBOL DISCOVERY:\n"
+        "- In 'suggest_symbols' list up to 5 tickers you want to analyse next cycle.\n"
+        "- Use this for any stock, ETF, or asset NOT currently in the universe that\n"
+        "  you believe is worth researching (e.g. BRK-B, ARM, CELH, sector ETFs, etc.).\n"
+        "- Next cycle those symbols will be fetched with full market data and technicals.\n\n"
         "EXIT CRITERIA — use percentage-based fields, NOT absolute price levels:\n"
         f"  stop_loss_pct: percentage below entry to stop out (e.g. {stop_loss_pct} means exit if down {abs(stop_loss_pct)}%)\n"
         "  take_profit_pct: percentage above entry to take profits (e.g. 25.0 means exit if up 25%)\n"
@@ -196,7 +209,8 @@ def build_pass2_messages(
         "  ],\n"
         '  "portfolio_outlook": "BULLISH" | "CAUTIOUSLY_BULLISH" | "NEUTRAL" | "CAUTIOUSLY_BEARISH" | "BEARISH",\n'
         '  "confidence": 0.0 to 1.0,\n'
-        '  "next_cycle_focus": "What to watch for in the next decision cycle"\n'
+        '  "next_cycle_focus": "What to watch for in the next decision cycle",\n'
+        '  "suggest_symbols": ["TICK1", "TICK2"]  // optional: up to 5 tickers to add to universe next cycle\n'
         "}\n"
     )
 

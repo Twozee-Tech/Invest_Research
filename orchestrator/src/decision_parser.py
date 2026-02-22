@@ -180,6 +180,7 @@ class DecisionResult(BaseModel):
     portfolio_outlook: str = "NEUTRAL"
     confidence: float = 0.5
     next_cycle_focus: str = ""
+    suggest_symbols: list[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -228,6 +229,21 @@ class DecisionResult(BaseModel):
                     # Already a TradeAction or other object - pass through
                     cleaned.append(a)
             data["actions"] = cleaned
+
+        # Normalize suggest_symbols: flatten strings, strip whitespace, uppercase
+        raw_suggest = data.get("suggest_symbols")
+        if isinstance(raw_suggest, list):
+            data["suggest_symbols"] = [
+                str(s).upper().strip() for s in raw_suggest
+                if isinstance(s, str) and s.strip()
+            ]
+        elif isinstance(raw_suggest, str):
+            # LLM returned a comma-separated string
+            data["suggest_symbols"] = [
+                s.strip().upper() for s in raw_suggest.split(",") if s.strip()
+            ]
+        else:
+            data["suggest_symbols"] = []
 
         return data
 

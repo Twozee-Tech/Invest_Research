@@ -137,3 +137,69 @@ accounts:
       - AMZN
       - META
       - TSLA
+
+  intraday_qwen:
+    name: "Intraday Momentum (Qwen)"
+    ghostfolio_account_id: "TBD"
+    model: "Qwen3-Next"
+    fallback_model: "Nemotron"
+    cycle_type: "intraday"
+    trading_hours: "NYSE"
+    cron: "*/30 9-16 * * 1-5"
+    broker_cost_model: "ibkr"
+    strategy: "momentum"
+    strategy_description: "Intraday Momentum: ride 30-min breakouts, cut losers fast, 2h minimum hold"
+    prompt_style: "Focus on short-term momentum. Enter on volume-confirmed breakouts, exit quickly on reversals."
+    preferred_metrics: ["RSI", "MACD", "Volume", "BollingerBands"]
+    horizon: "hours to days"
+    risk_profile:
+      max_position_pct: 15
+      min_cash_pct: 20
+      max_trades_per_cycle: 2
+      stop_loss_pct: -3
+      min_holding_hours: 2
+      max_sector_exposure_pct: 50
+      scan_confidence_threshold: 0.6
+      cost_breakeven_multiplier: 2.0
+    watchlist:
+      - SPY
+      - QQQ
+      - NVDA
+      - AMD
+      - TSLA
+      - META
+      - AAPL
+      - MSFT
+
+  intraday_nemotron:
+    name: "Intraday Momentum (Nemotron)"
+    ghostfolio_account_id: "TBD"
+    model: "Nemotron"
+    fallback_model: "Qwen3-Next"
+    cycle_type: "intraday"
+    trading_hours: "NYSE"
+    cron: "*/30 9-16 * * 1-5"
+    broker_cost_model: "ibkr"
+    strategy: "momentum"
+    strategy_description: "Intraday Momentum: ride 30-min breakouts, cut losers fast, 2h minimum hold"
+    prompt_style: "Focus on short-term momentum. Enter on volume-confirmed breakouts, exit quickly on reversals."
+    preferred_metrics: ["RSI", "MACD", "Volume", "BollingerBands"]
+    horizon: "hours to days"
+    risk_profile:
+      max_position_pct: 15
+      min_cash_pct: 20
+      max_trades_per_cycle: 2
+      stop_loss_pct: -3
+      min_holding_hours: 2
+      max_sector_exposure_pct: 50
+      scan_confidence_threshold: 0.6
+      cost_breakeven_multiplier: 2.0
+    watchlist:
+      - SPY
+      - QQQ
+      - NVDA
+      - AMD
+      - TSLA
+      - META
+      - AAPL
+      - MSFT
