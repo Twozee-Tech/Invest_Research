@@ -75,20 +75,34 @@ class GhostfolioClient:
         currency: str | None = None,
     ) -> dict:
         """Update an existing account's fields."""
-        payload: dict = {}
-        if name is not None:
-            payload["name"] = name
+        # Fetch current account data from the list (list_accounts is more reliable
+        # than get_account because GET /api/v1/account/{id} is not available in all
+        # Ghostfolio versions).
+        existing: dict = {}
+        try:
+            all_accounts = self.list_accounts()
+            if isinstance(all_accounts, dict):
+                accounts_list = all_accounts.get("accounts", []) or []
+            else:
+                accounts_list = all_accounts if isinstance(all_accounts, list) else []
+            existing = next(
+                (a for a in accounts_list if isinstance(a, dict) and a.get("id") == account_id),
+                {},
+            )
+        except Exception as e:
+            logger.warning("update_account_fetch_existing_failed", account_id=account_id, error=str(e))
+
+        payload: dict = {
+            "id": account_id,
+            "name": name if name is not None else existing.get("name", ""),
+            "currency": currency if currency is not None else existing.get("currency", "USD"),
+            "isExcluded": existing.get("isExcluded", False),
+            # platformId must be null (None) if unset — Ghostfolio rejects empty string ""
+            "platformId": existing.get("platformId") or None,
+        }
         if balance is not None:
             payload["balance"] = balance
-        if currency is not None:
-            payload["currency"] = currency
-        # Ghostfolio requires PUT with id and platformId
-        existing = self.get_account(account_id)
-        payload.setdefault("id", account_id)
-        payload.setdefault("name", existing.get("name", ""))
-        payload.setdefault("currency", existing.get("currency", "USD"))
-        payload.setdefault("isExcluded", existing.get("isExcluded", False))
-        payload.setdefault("platformId", existing.get("platformId") or "")
+
         return self._request("PUT", f"/api/v1/account/{account_id}", json=payload)
 
     def create_account(

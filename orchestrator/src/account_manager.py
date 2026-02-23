@@ -63,6 +63,20 @@ class AccountManager:
         # Cycle types that don't trade and need no Ghostfolio account
         _NON_TRADING = {"research"}
 
+        # Build a map of all existing Ghostfolio accounts once (avoids per-account GET calls)
+        gf_accounts_by_id: dict[str, dict] = {}
+        try:
+            all_accts = self.client.list_accounts()
+            if isinstance(all_accts, dict):
+                raw_list = all_accts.get("accounts", []) or []
+            else:
+                raw_list = all_accts if isinstance(all_accts, list) else []
+            for a in raw_list:
+                if isinstance(a, dict) and a.get("id"):
+                    gf_accounts_by_id[a["id"]] = a
+        except Exception as e:
+            logger.warning("ensure_accounts_list_failed", error=str(e))
+
         for key, acct in accounts.items():
             if acct.get("cycle_type") in _NON_TRADING:
                 continue  # research agent has no portfolio
@@ -72,12 +86,11 @@ class AccountManager:
             currency = self.config.get("defaults", {}).get("currency", "USD")
 
             if gf_id and gf_id != "TBD":
-                # Verify it exists and sync name
-                try:
-                    existing = self.client.get_account(gf_id)
+                existing = gf_accounts_by_id.get(gf_id)
+                if existing:
                     result[key] = gf_id
                     # Rename if name differs
-                    existing_name = existing.get("name", "") if isinstance(existing, dict) else ""
+                    existing_name = existing.get("name", "")
                     if existing_name and existing_name != name:
                         try:
                             self.client.update_account(gf_id, name=name)
@@ -87,7 +100,7 @@ class AccountManager:
                     else:
                         logger.info("account_verified", key=key, ghostfolio_id=gf_id)
                     continue
-                except Exception:
+                else:
                     logger.warning("account_not_found_in_ghostfolio", key=key, id=gf_id)
 
             # Create new account
