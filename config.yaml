@@ -8,12 +8,23 @@ defaults:
   quote_cache_ttl_seconds: 60
 
 accounts:
+  research:
+    name: "Daily Research Agent"
+    cycle_type: "research"
+    cron: "0 14 * * 0-4"        # Mon-Fri 14:00 CET (1.5h before NYSE open at 15:30)
+    model: "Nemotron"
+    fallback_model: "Qwen3-Next"
+    max_news_articles: 40
+    max_article_chars: 3000
+    max_screener_per_source: 15
+
   weekly_balanced:
     name: "Weekly Balanced"
-    ghostfolio_account_id: "4531e05e-9062-45dc-aa53-0220336255f6"
+    ghostfolio_account_id: "0c61c851-1f59-4708-b055-b15a9c3cfb13"
     model: "Qwen3-Next"
     fallback_model: "Nemotron"
-    cron: "0 20 * * 0"
+    broker_cost_model: "ibkr"
+    cron: "0 20 * * 6"   # Sunday 20:00
     strategy: "core_satellite"
     strategy_description: "Core-Satellite: 60% ETF core + 30% stock satellites + 10% cash reserve"
     prompt_style: "Balance risk and return. Prefer broad ETF exposure as core, select individual stocks as satellites for alpha."
@@ -44,10 +55,11 @@ accounts:
 
   monthly_value:
     name: "Monthly Value"
-    ghostfolio_account_id: "TBD"
+    ghostfolio_account_id: "0349cba7-f4bd-4b02-b9c2-e0731e3143a9"
     model: "Qwen3-Next"
     fallback_model: "Nemotron"
-    cron: "0 20 1 * *"
+    broker_cost_model: "ibkr"
+    cron: "20 20 1 * *"  # 1st of month 20:20 (staggered +20min vs Weekly)
     strategy: "value_investing"
     strategy_description: "Value Investing: 40% ETF + 50% undervalued stocks + 10% cash reserve"
     prompt_style: "Seek undervalued assets with margin of safety. Focus on fundamentals, dividends, and long-term compounding."
@@ -78,10 +90,11 @@ accounts:
 
   daily_momentum:
     name: "Daily Momentum"
-    ghostfolio_account_id: "TBD"
+    ghostfolio_account_id: "1d035b0e-ba6e-426e-9ed2-67edf4b7b5a6"
     model: "Qwen3-Next"
     fallback_model: "Miro_Thinker"
-    cron: "0 18 * * 1-5"
+    broker_cost_model: "ibkr"
+    cron: "0 18 * * 0-4"  # Mon-Fri 18:00
     strategy: "momentum"
     strategy_description: "Momentum/Swing: 20% ETF + 70% high-momentum stocks + 10% cash reserve"
     prompt_style: "Ride momentum, cut losers fast. Focus on technical breakouts, volume surges, and trend strength."
@@ -110,42 +123,185 @@ accounts:
 
   options_spreads:
     name: "Options Spreads"
-    ghostfolio_account_id: "TBD"
+    ghostfolio_account_id: "4edf44b5-8181-4df5-84ad-b6cbd275638b"
     model: "Qwen3-Next"
     fallback_model: "Nemotron"
-    cron: "0 18 * * 5"
-    strategy: "vertical_spreads"
-    strategy_description: "Vertical Spreads: bull call / bear put, target delta 0.30, DTE 30-45"
-    prompt_style: "Analyze market direction and IV regime. Decide which positions to open, close, or roll based on Greeks and P&L."
+    broker_cost_model: "ibkr"
+    cron: "20 18 * * 4"  # Friday 18:20 (staggered +20min vs Daily)
+    strategy: "wheel"
+    strategy_description: "Wheel Strategy: sell cash-secured puts on quality underlyings; if assigned sell covered calls above cost basis"
+    prompt_style: "Analyze IV regime and select the best underlyings for premium selling. Use available cash — CSP collateral IS the cash. Prefer stocks under $100 so 1 contract fits the account size."
     preferred_metrics: ["IV", "Delta", "Theta", "RSI", "Trend"]
     horizon: "weeks (DTE 30-45)"
     risk_profile:
-      max_portfolio_delta_pct: 15
-      min_cash_pct: 40
-      max_open_spreads: 5
-      max_allocation_per_spread_pct: 10
-      min_new_position_dte: 21
-      auto_close_dte: 7
-      take_profit_pct: 75
-      stop_loss_pct: 50
+      min_cash_pct: 5        # near-zero: CSP collateral uses the cash by design
+      max_open_csps: 5
+      max_ccs_per_symbol: 2
+      csp_target_delta: 0.30
+      csp_dte_min: 21
+      csp_dte_max: 45
+      cc_target_delta: 0.25
+      cc_dte_min: 14
+      cc_dte_max: 30
+      take_profit_pct: 50
+      stop_loss_pct: 200     # 200% of premium = stop loss for shorts
+      earnings_blackout_days: 5
+    watchlist:
+      - BAC      # ~$53  → 1 CSP ≈ $4,500
+      - INTC     # ~$44  → 1 CSP ≈ $3,800
+      - SOFI     # ~$19  → 1 CSP ≈ $1,600
+      - T        # ~$28  → 1 CSP ≈ $2,400
+      - F        # ~$14  → 1 CSP ≈ $1,200
+      - NVDA     # ~$190 → 1 CSP ≈ $16k (only if cash allows)
+      - AAPL     # ~$264 → 1 CSP ≈ $22k (only if cash allows)
+      - SPY      # for CC after assignment
+
+  weekly_balanced_nemotron:
+    name: "Weekly Balanced (Nemotron)"
+    ghostfolio_account_id: "e7c32094-41eb-4d84-84cf-57780961a20b"
+    model: "Nemotron"
+    fallback_model: "Qwen3-Next"
+    broker_cost_model: "ibkr"
+    cron: "20 20 * * 6"  # Sunday 20:20 (staggered +20min vs Qwen)
+    strategy: "core_satellite"
+    strategy_description: "Core-Satellite: 60% ETF core + 30% stock satellites + 10% cash reserve"
+    prompt_style: "Balance risk and return. Prefer broad ETF exposure as core, select individual stocks as satellites for alpha."
+    preferred_metrics: ["SMA", "RSI", "PE"]
+    horizon: "weeks to months"
+    risk_profile:
+      max_position_pct: 20
+      min_cash_pct: 10
+      max_trades_per_cycle: 5
+      stop_loss_pct: -15
+      min_holding_days: 14
+      max_sector_exposure_pct: 40
     watchlist:
       - SPY
       - QQQ
+      - VTI
+      - VOO
       - AAPL
-      - NVDA
       - MSFT
+      - GOOGL
       - AMZN
+      - NVDA
       - META
+      - JPM
+      - V
+      - JNJ
+      - UNH
+
+  monthly_value_nemotron:
+    name: "Monthly Value (Nemotron)"
+    ghostfolio_account_id: "07bb08a5-982b-4eb2-8d92-8a845bebae7a"
+    model: "Nemotron"
+    fallback_model: "Qwen3-Next"
+    broker_cost_model: "ibkr"
+    cron: "40 20 1 * *"  # 1st of month 20:40 (staggered +20min vs Qwen)
+    strategy: "value_investing"
+    strategy_description: "Value Investing: 40% ETF + 50% undervalued stocks + 10% cash reserve"
+    prompt_style: "Seek undervalued assets with margin of safety. Focus on fundamentals, dividends, and long-term compounding."
+    preferred_metrics: ["PE", "PB", "DividendYield", "FCF"]
+    horizon: "months to years"
+    risk_profile:
+      max_position_pct: 15
+      min_cash_pct: 10
+      max_trades_per_cycle: 3
+      stop_loss_pct: -20
+      min_holding_days: 30
+      max_sector_exposure_pct: 35
+    watchlist:
+      - VTI
+      - SCHD
+      - VYM
+      - BRK-B
+      - JPM
+      - PG
+      - KO
+      - JNJ
+      - PFE
+      - WMT
+      - HD
+      - CAT
+      - XOM
+      - CVX
+
+  daily_momentum_nemotron:
+    name: "Daily Momentum (Nemotron)"
+    ghostfolio_account_id: "98ec2f2c-6728-4422-8771-aa5058f44317"
+    model: "Nemotron"
+    fallback_model: "Qwen3-Next"
+    broker_cost_model: "ibkr"
+    cron: "20 18 * * 0-4"  # Mon-Fri 18:20 (staggered +20min vs Qwen)
+    strategy: "momentum"
+    strategy_description: "Momentum/Swing: 20% ETF + 70% high-momentum stocks + 10% cash reserve"
+    prompt_style: "Ride momentum, cut losers fast. Focus on technical breakouts, volume surges, and trend strength."
+    preferred_metrics: ["RSI", "MACD", "Volume", "BollingerBands"]
+    horizon: "days to weeks"
+    risk_profile:
+      max_position_pct: 25
+      min_cash_pct: 10
+      max_trades_per_cycle: 3
+      stop_loss_pct: -8
+      min_holding_days: 1
+      max_sector_exposure_pct: 50
+    watchlist:
+      - SPY
+      - QQQ
+      - TQQQ
+      - SOXL
+      - NVDA
+      - AMD
       - TSLA
+      - META
+      - COIN
+      - PLTR
+      - SOFI
+      - MARA
+
+  options_spreads_nemotron:
+    name: "Options Spreads (Nemotron)"
+    ghostfolio_account_id: "6c7e408b-90bb-4046-a43f-e2157c652972"
+    model: "Nemotron"
+    fallback_model: "Qwen3-Next"
+    broker_cost_model: "ibkr"
+    cron: "40 18 * * 4"  # Friday 18:40 (staggered +20min vs Qwen)
+    strategy: "wheel"
+    strategy_description: "Wheel Strategy: sell cash-secured puts on quality underlyings; if assigned sell covered calls above cost basis"
+    prompt_style: "Analyze IV regime and select the best underlyings for premium selling. Use available cash — CSP collateral IS the cash. Prefer stocks under $100 so 1 contract fits the account size."
+    preferred_metrics: ["IV", "Delta", "Theta", "RSI", "Trend"]
+    horizon: "weeks (DTE 30-45)"
+    risk_profile:
+      min_cash_pct: 5        # near-zero: CSP collateral uses the cash by design
+      max_open_csps: 5
+      max_ccs_per_symbol: 2
+      csp_target_delta: 0.30
+      csp_dte_min: 21
+      csp_dte_max: 45
+      cc_target_delta: 0.25
+      cc_dte_min: 14
+      cc_dte_max: 30
+      take_profit_pct: 50
+      stop_loss_pct: 200
+      earnings_blackout_days: 5
+    watchlist:
+      - BAC      # ~$53  → 1 CSP ≈ $4,500
+      - INTC     # ~$44  → 1 CSP ≈ $3,800
+      - SOFI     # ~$19  → 1 CSP ≈ $1,600
+      - T        # ~$28  → 1 CSP ≈ $2,400
+      - F        # ~$14  → 1 CSP ≈ $1,200
+      - NVDA     # ~$190 → 1 CSP ≈ $16k (only if cash allows)
+      - AAPL     # ~$264 → 1 CSP ≈ $22k (only if cash allows)
+      - SPY      # for CC after assignment
 
   intraday_qwen:
     name: "Intraday Momentum (Qwen)"
-    ghostfolio_account_id: "TBD"
+    ghostfolio_account_id: "17bbfca4-6075-48cd-a8f4-272e093318a2"
     model: "Qwen3-Next"
     fallback_model: "Nemotron"
     cycle_type: "intraday"
     trading_hours: "NYSE"
-    cron: "*/30 9-16 * * 1-5"
+    cron: "0,30 15-21 * * 0-4"  # Mon-Fri 15:00-21:30 CET (NYSE 15:30-22:00 CET)
     broker_cost_model: "ibkr"
     strategy: "momentum"
     strategy_description: "Intraday Momentum: ride 30-min breakouts, cut losers fast, 2h minimum hold"
@@ -173,12 +329,12 @@ accounts:
 
   intraday_nemotron:
     name: "Intraday Momentum (Nemotron)"
-    ghostfolio_account_id: "TBD"
+    ghostfolio_account_id: "89aa33bf-49be-499f-9c4e-57361db4722c"
     model: "Nemotron"
     fallback_model: "Qwen3-Next"
     cycle_type: "intraday"
     trading_hours: "NYSE"
-    cron: "*/30 9-16 * * 1-5"
+    cron: "15,45 15-21 * * 0-4"  # Mon-Fri 15:15-21:45 CET (staggered +15min vs Qwen)
     broker_cost_model: "ibkr"
     strategy: "momentum"
     strategy_description: "Intraday Momentum: ride 30-min breakouts, cut losers fast, 2h minimum hold"

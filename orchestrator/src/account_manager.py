@@ -60,7 +60,13 @@ class AccountManager:
         result: dict[str, str] = {}
         config_changed = False
 
+        # Cycle types that don't trade and need no Ghostfolio account
+        _NON_TRADING = {"research"}
+
         for key, acct in accounts.items():
+            if acct.get("cycle_type") in _NON_TRADING:
+                continue  # research agent has no portfolio
+
             gf_id = acct.get("ghostfolio_account_id", "TBD")
             name = acct.get("name", key)
             currency = self.config.get("defaults", {}).get("currency", "USD")

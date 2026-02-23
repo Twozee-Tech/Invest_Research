@@ -17,6 +17,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from .account_manager import AccountManager
+from .research_agent import ResearchAgent
 from .audit_logger import AuditLogger
 from .decision_parser import parse_analysis, parse_decision
 from .ghostfolio_client import GhostfolioClient
@@ -78,7 +79,7 @@ class Orchestrator:
 
     @staticmethod
     def _is_options_account(acct: dict) -> bool:
-        return acct.get("strategy") == "vertical_spreads"
+        return acct.get("strategy") in ("vertical_spreads", "wheel")
 
     @staticmethod
     def _is_market_open(trading_hours: str = "NYSE") -> bool:
@@ -269,6 +270,15 @@ class Orchestrator:
             from .prompt_builder import format_decision_history
             history_text = format_decision_history(history)
 
+            # Daily research brief
+            research_brief: dict | None = None
+            try:
+                research_brief = ResearchAgent.load_today()
+                if research_brief:
+                    logger.debug("intraday_research_brief_loaded", date=research_brief.get("date"))
+            except Exception as e:
+                logger.warning("intraday_research_brief_load_failed", error=str(e))
+
             # --- Pass 1 ---
             logger.info("intraday_pass1", account=account_name, model=model)
             pass1_messages = build_pass1_messages(
@@ -279,6 +289,7 @@ class Orchestrator:
                 decision_history=history_text,
                 strategy_config=acct,
                 earnings_text=earnings_text,
+                research_brief=research_brief,
             )
             analysis_raw = self.llm.chat_json(
                 messages=pass1_messages,
@@ -400,14 +411,23 @@ class Orchestrator:
                         logger.error("intraday_trade_failed",
                                      symbol=r.action.symbol, error=r.error)
 
+                new_cash = max(0, portfolio.cash + cash_delta)
                 portfolio_after = {
                     "total_value": portfolio.total_value,
-                    "cash": max(0, portfolio.cash + cash_delta),
+                    "cash": new_cash,
                     "positions": len(new_symbols),
                     "total_pl_pct": portfolio.total_pl_pct,
                     "cash_deployed": -cash_delta,
                     "fees_paid": round(fees_paid, 4),
                 }
+
+                # Sync cash balance back to Ghostfolio so total_value is correct
+                if cash_delta != 0 and account_id:
+                    try:
+                        self.ghostfolio.update_account(account_id, balance=new_cash)
+                        logger.info("account_balance_updated", account=account_name, new_cash=round(new_cash, 2))
+                    except Exception as e:
+                        logger.warning("account_balance_update_failed", account=account_name, error=str(e))
             else:
                 logger.info("intraday_no_trades", account=account_name,
                             reason="No actions after risk + cost filters")
@@ -456,6 +476,21 @@ class Orchestrator:
         logger.info("intraday_cycle_complete", account=account_name,
                     status=status, log=log_file)
 
+    def run_research_cycle(self) -> None:
+        """Daily market research: gather broad news + screeners → LLM synthesis → JSON brief."""
+        self._load_config()
+        agent = ResearchAgent(self.llm, self.news, self.market_data, self.config)
+        try:
+            result = agent.run()
+            logger.info(
+                "research_cycle_complete",
+                themes=result.get("key_themes", []),
+                top_symbols=[s["symbol"] for s in result.get("top_symbols", [])],
+                regime=result.get("market_regime"),
+            )
+        except Exception as e:
+            logger.error("research_cycle_failed", error=str(e), exc_info=True)
+
     def run_cycle(self, account_key: str) -> None:
         """Run a full decision cycle for one account.
 
@@ -482,6 +517,8 @@ class Orchestrator:
         model = acct.get("model", "Nemotron")
         fallback = acct.get("fallback_model")
         risk_profile = acct.get("risk_profile", {})
+        cost_model = acct.get("broker_cost_model", "")
+        cost_breakeven_mult = risk_profile.get("cost_breakeven_multiplier", 2.0)
 
         # Dynamic watchlist: core + screener + previous LLM suggestions
         watchlist_mgr = WatchlistManager(
@@ -575,6 +612,15 @@ class Orchestrator:
                             action["result_pct"] = pos.unrealized_pl_pct
             history_text = format_decision_history(history)
 
+            # Daily research brief (produced by research agent at 14:00 CET)
+            research_brief: dict | None = None
+            try:
+                research_brief = ResearchAgent.load_today()
+                if research_brief:
+                    logger.debug("research_brief_loaded", date=research_brief.get("date"))
+            except Exception as e:
+                logger.warning("research_brief_load_failed", error=str(e))
+
             # ===== PHASE 2: LLM PASS 1 - ANALYSIS =====
             logger.info("phase2_llm_analysis", account=account_name, model=model)
 
@@ -587,6 +633,7 @@ class Orchestrator:
                 strategy_config=acct,
                 earnings_text=earnings_text,
                 fundamentals_text=fundamentals_text,
+                research_brief=research_brief,
             )
 
             analysis_raw = self.llm.chat_json(
@@ -647,7 +694,22 @@ class Orchestrator:
                 logger.info("risk_modification", account=account_name, mod=m)
 
             # ===== PHASE 5: TRADE EXECUTION =====
-            all_actions = risk_result.forced_actions + risk_result.approved_actions
+            all_candidates = risk_result.forced_actions + risk_result.approved_actions
+            if cost_model:
+                all_actions, cost_filtered = filter_by_cost_breakeven(
+                    all_candidates, portfolio, cost_model, cost_breakeven_mult,
+                )
+                for f in cost_filtered:
+                    logger.info(
+                        "cost_filtered",
+                        symbol=f["action"].symbol,
+                        reason=f["reason"],
+                    )
+                    risk_result.modifications.append(
+                        f"COST-FILTERED {f['action'].type} {f['action'].symbol}: {f['reason']}"
+                    )
+            else:
+                all_actions = all_candidates
             executed_trades = []
 
             if all_actions:
@@ -659,16 +721,20 @@ class Orchestrator:
                 )
                 executor = TradeExecutor(
                     self.ghostfolio, self.market_data, dry_run=self.dry_run,
+                    broker_cost_model=cost_model,
                 )
                 results = executor.execute_trades(all_actions, account_id)
 
+                fees_paid = 0.0
                 for r in results:
+                    fees_paid += r.fee
                     executed_trades.append({
                         "type": r.action.type,
                         "symbol": r.action.symbol,
                         "quantity": r.quantity,
                         "price": r.unit_price,
                         "total": r.total_cost,
+                        "fee": r.fee,
                         "success": r.success,
                         "error": r.error,
                         "order_id": r.ghostfolio_order_id,
@@ -680,6 +746,7 @@ class Orchestrator:
                             type=r.action.type,
                             qty=round(r.quantity, 4),
                             price=r.unit_price,
+                            fee=r.fee,
                         )
                     else:
                         logger.error("trade_failed", symbol=r.action.symbol, error=r.error)
@@ -697,18 +764,28 @@ class Orchestrator:
             new_symbols = {p.symbol for p in portfolio.positions}
             for t in executed_trades:
                 if t.get("success"):
+                    fee = t.get("fee", 0)
                     if t["type"] == "BUY":
-                        cash_delta -= t.get("total", 0)
+                        cash_delta -= t.get("total", 0) + fee
                         new_symbols.add(t["symbol"])
                     elif t["type"] == "SELL":
-                        cash_delta += t.get("total", 0)
+                        cash_delta += t.get("total", 0) - fee
+            new_cash = max(0, portfolio.cash + cash_delta)
             portfolio_after = {
                 "total_value": portfolio.total_value,  # approx — prices unchanged short-term
-                "cash": max(0, portfolio.cash + cash_delta),
+                "cash": new_cash,
                 "positions": len(new_symbols),
                 "total_pl_pct": portfolio.total_pl_pct,
                 "cash_deployed": -cash_delta,
             }
+
+            # Sync cash balance back to Ghostfolio so total_value is correct
+            if cash_delta != 0 and account_id:
+                try:
+                    self.ghostfolio.update_account(account_id, balance=new_cash)
+                    logger.info("account_balance_updated", account=account_name, new_cash=round(new_cash, 2))
+                except Exception as e:
+                    logger.warning("account_balance_update_failed", account=account_name, error=str(e))
 
         except Exception as e:
             error_msg = str(e)
@@ -745,6 +822,7 @@ class Orchestrator:
             portfolio_before=portfolio_before,
             portfolio_after=portfolio_after,
             error=error_msg,
+            fees_paid=fees_paid if executed_trades else 0.0,
         )
 
         status = "ERROR" if error_msg else "OK"
@@ -887,6 +965,7 @@ class Orchestrator:
                 active_positions=active_positions,
                 portfolio_greeks=portfolio_greeks,
                 decision_history=history_text,
+                market_data=market_data,
             )
 
             decision_raw = self.llm.chat_json(
@@ -913,6 +992,7 @@ class Orchestrator:
                 active_positions=active_positions,
                 portfolio=portfolio,
                 portfolio_greeks=portfolio_greeks,
+                market_data=market_data,
             )
 
             for w in risk_result.warnings:
@@ -1038,8 +1118,13 @@ def main():
     if args.once:
         logger.info("running_single_cycle", account=args.once)
         acct_cfg = orch.config.get("accounts", {}).get(args.once, {})
-        if acct_cfg.get("cycle_type") == "intraday":
+        cycle_type = acct_cfg.get("cycle_type", "standard")
+        if cycle_type == "research":
+            orch.run_research_cycle()
+        elif cycle_type == "intraday":
             orch.run_intraday_cycle(args.once)
+        elif orch._is_options_account(acct_cfg):
+            orch.run_options_cycle(args.once)
         else:
             orch.run_cycle(args.once)
         return
@@ -1047,7 +1132,10 @@ def main():
     if args.all:
         logger.info("running_all_accounts")
         for key, acct_cfg in orch.config.get("accounts", {}).items():
-            if acct_cfg.get("cycle_type") == "intraday":
+            cycle_type = acct_cfg.get("cycle_type", "standard")
+            if cycle_type == "research":
+                orch.run_research_cycle()
+            elif cycle_type == "intraday":
                 orch.run_intraday_cycle(key)
             else:
                 orch.run_cycle(key)
@@ -1062,16 +1150,21 @@ def main():
         try:
             cron_kwargs = parse_cron(cron_str)
             trigger = CronTrigger(**cron_kwargs)
-            if cycle_type == "intraday":
+            if cycle_type == "research":
+                job_fn = orch.run_research_cycle
+                grace = 1800  # 30 min grace (heavy LLM call)
+            elif cycle_type == "intraday":
                 job_fn = orch.run_intraday_cycle
                 grace = 300  # 5-min grace for intraday (tighter than hourly)
             else:
                 job_fn = orch.run_cycle
                 grace = 3600
+            # Research cycle takes no account_key argument
+            job_args = [] if cycle_type == "research" else [key]
             scheduler.add_job(
                 job_fn,
                 trigger=trigger,
-                args=[key],
+                args=job_args,
                 id=f"cycle_{key}",
                 name=f"Decision cycle: {acct.get('name', key)}",
                 misfire_grace_time=grace,

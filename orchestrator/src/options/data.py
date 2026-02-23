@@ -114,12 +114,25 @@ def _filter_chain(df: pd.DataFrame, underlying_price: float) -> pd.DataFrame:
     df = df[(df["strike"] >= lo) & (df["strike"] <= hi)].copy()
 
     # Liquidity filters
-    if "openInterest" in df.columns:
-        df = df[df["openInterest"] >= MIN_OPEN_INTEREST]
-    if "bid" in df.columns:
-        df = df[df["bid"] >= MIN_BID]
-    if "volume" in df.columns:
-        df = df[df["volume"].fillna(0) >= MIN_VOLUME]
+    # Use live bid quotes as the market-open signal:
+    # When market is closed (weekends, holidays), market makers stop quoting → bid=0 everywhere.
+    # Volume is NOT a reliable signal because yfinance returns historical (cumulative) volume
+    # even on non-trading days.
+    market_open = (
+        "bid" in df.columns and df["bid"].fillna(0).sum() > 0
+    )
+    if market_open:
+        # Live session: require OI, live bid, and daily volume
+        if "openInterest" in df.columns:
+            df = df[df["openInterest"] >= MIN_OPEN_INTEREST]
+        if "bid" in df.columns:
+            df = df[df["bid"] >= MIN_BID]
+        if "volume" in df.columns:
+            df = df[df["volume"].fillna(0) >= MIN_VOLUME]
+    else:
+        # Market closed (weekend/holiday): use lastPrice as viability proxy
+        if "lastPrice" in df.columns:
+            df = df[df["lastPrice"].fillna(0) >= MIN_BID]
 
     return df.reset_index(drop=True)
 

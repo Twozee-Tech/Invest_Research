@@ -93,7 +93,13 @@ def get_portfolio_state(
     account_id: str,
     account_name: str,
 ) -> PortfolioState:
-    """Build a PortfolioState from Ghostfolio API data."""
+    """Build a PortfolioState from Ghostfolio API data.
+
+    Uses:
+      - account list  → cash balance + total value (valueInBaseCurrency)
+      - order list    → per-account positions (filtered by accountId)
+      - holdings list → current market prices (matched by symbol)
+    """
     _empty = PortfolioState(
         account_id=account_id,
         account_name=account_name,
@@ -104,15 +110,15 @@ def get_portfolio_state(
     )
 
     try:
-        holdings_data = client.get_portfolio_holdings()
         accounts_raw = client.list_accounts()
+        orders_raw = client.list_orders()
+        holdings_raw = client.get_portfolio_holdings()
     except Exception as e:
         logger.error("portfolio_state_fetch_failed", account_id=account_id, error=str(e))
         return _empty
 
     try:
-        # list_accounts() returns a list in most Ghostfolio versions,
-        # but some versions wrap it: {"accounts": [...]}
+        # ── 1. Account cash + total value ──────────────────────────────────────
         if isinstance(accounts_raw, list):
             accounts = accounts_raw
         elif isinstance(accounts_raw, dict):
@@ -120,84 +126,141 @@ def get_portfolio_state(
         else:
             accounts = []
 
-        # Find account balance (cash)
-        account_info = None
-        for acc in accounts:
-            if isinstance(acc, dict) and acc.get("id") == account_id:
-                account_info = acc
-                break
+        account_info = next(
+            (a for a in accounts if isinstance(a, dict) and a.get("id") == account_id),
+            None,
+        )
 
-        cash = account_info.get("balance", 0) if isinstance(account_info, dict) else 0
+        cash = float(account_info.get("balance", 0) or 0) if account_info else 0.0
+        # valueInBaseCurrency from the account list = securities market value + balance
+        # (Ghostfolio computes this correctly even when /portfolio/holdings can't be
+        # filtered per account)
+        api_total = float(account_info.get("valueInBaseCurrency", 0) or 0) if account_info else 0.0
 
-        # Ghostfolio wraps holdings: {"holdings": {...}} in some versions
-        if isinstance(holdings_data, dict) and "holdings" in holdings_data:
-            raw_holdings = holdings_data["holdings"]
+        # ── 2. Build price map from holdings list ──────────────────────────────
+        # /api/v1/portfolio/holdings returns a list (not a dict) in recent Ghostfolio
+        # versions, without per-account filtering.  We use it only as a price source.
+        if isinstance(holdings_raw, dict) and "holdings" in holdings_raw:
+            raw_list = holdings_raw["holdings"]
         else:
-            raw_holdings = holdings_data
+            raw_list = holdings_raw
 
-        # Build positions from holdings that belong to this account
-        positions = []
-        sector_totals: dict[str, float] = {}
-        total_invested = 0.0
-
-        holdings = raw_holdings if isinstance(raw_holdings, dict) else {}
-        for symbol, holding in holdings.items():
-            # Filter holdings for this account
-            if not isinstance(holding, dict):
-                continue
-
-            accounts_in_holding = holding.get("accounts", {})
-            if account_id not in accounts_in_holding and accounts_in_holding:
-                continue
-
-            quantity = holding.get("quantity", 0)
-            if quantity <= 0:
-                continue
-
-            avg_cost = holding.get("averagePrice", 0)
-            current_price = holding.get("marketPrice", 0)
-            market_value = holding.get("marketValue", quantity * current_price)
-            investment = holding.get("investment", quantity * avg_cost)
-            unrealized_pl = market_value - investment
-            unrealized_pl_pct = (unrealized_pl / investment * 100) if investment > 0 else 0
-
-            # sectors may be a list of dicts {"name": "Tech"} or plain strings
-            sectors_raw = holding.get("sectors") or []
-            if sectors_raw:
-                first = sectors_raw[0]
+        price_map: dict[str, dict] = {}
+        if isinstance(raw_list, list):
+            for h in raw_list:
+                if not isinstance(h, dict):
+                    continue
+                sp = h.get("SymbolProfile") or {}
+                sym = sp.get("symbol") or h.get("symbol", "")
+                if not sym or len(sym) > 10:  # skip UUIDs / system entries
+                    continue
+                sectors_raw = h.get("sectors") or []
+                first = sectors_raw[0] if sectors_raw else {}
                 sector = first.get("name", "Unknown") if isinstance(first, dict) else str(first)
-            else:
-                sector = "Unknown"
+                price_map[sym] = {
+                    "price": float(h.get("marketPrice", 0) or 0),
+                    "sector": sector,
+                    "name": h.get("name", sym),
+                }
+        elif isinstance(raw_list, dict):
+            # Legacy dict format (older Ghostfolio)
+            for sym, h in raw_list.items():
+                if not isinstance(h, dict):
+                    continue
+                sectors_raw = h.get("sectors") or []
+                first = sectors_raw[0] if sectors_raw else {}
+                sector = first.get("name", "Unknown") if isinstance(first, dict) else str(first)
+                price_map[sym] = {
+                    "price": float(h.get("marketPrice", 0) or 0),
+                    "sector": sector,
+                    "name": h.get("name", sym),
+                }
 
-            position = Position(
-                symbol=symbol,
-                name=holding.get("name", symbol),
-                quantity=quantity,
+        # ── 3. Build positions from orders filtered by accountId ───────────────
+        if isinstance(orders_raw, list):
+            orders = orders_raw
+        elif isinstance(orders_raw, dict):
+            orders = orders_raw.get("activities", []) or []
+        else:
+            orders = []
+
+        acct_orders = [o for o in orders if isinstance(o, dict) and o.get("accountId") == account_id]
+
+        # Aggregate BUY / SELL per symbol
+        agg: dict[str, dict] = {}  # symbol → {qty, total_cost, first_date}
+        for order in acct_orders:
+            sp = order.get("SymbolProfile") or {}
+            sym = sp.get("symbol") or order.get("symbol", "")
+            if not sym:
+                continue
+            qty = float(order.get("quantity", 0) or 0)
+            price = float(order.get("unitPrice", 0) or 0)
+            order_type = (order.get("type") or "BUY").upper()
+            order_date = str(order.get("date", ""))[:10]
+
+            if sym not in agg:
+                agg[sym] = {"qty": 0.0, "total_cost": 0.0, "first_date": order_date}
+            if order_type == "BUY":
+                agg[sym]["qty"] += qty
+                agg[sym]["total_cost"] += qty * price
+            elif order_type == "SELL":
+                # Reduce qty; proportionally reduce cost basis
+                if agg[sym]["qty"] > 0:
+                    sell_fraction = min(qty / agg[sym]["qty"], 1.0)
+                    agg[sym]["total_cost"] *= (1 - sell_fraction)
+                agg[sym]["qty"] = max(0, agg[sym]["qty"] - qty)
+
+        positions: list[Position] = []
+        total_market = 0.0
+        total_invested = 0.0
+        sector_totals: dict[str, float] = {}
+
+        for sym, data in agg.items():
+            qty = data["qty"]
+            if qty < 0.0001:
+                continue
+
+            avg_cost = data["total_cost"] / qty if qty > 0 else 0.0
+            info = price_map.get(sym, {})
+            current_price = info.get("price", 0.0) or avg_cost  # fallback to cost
+            market_value = current_price * qty
+            investment = avg_cost * qty
+            unrealized_pl = market_value - investment
+            unrealized_pl_pct = (unrealized_pl / investment * 100) if investment > 0 else 0.0
+            sector = info.get("sector", "Unknown")
+
+            positions.append(Position(
+                symbol=sym,
+                name=info.get("name", sym),
+                quantity=qty,
                 avg_cost=avg_cost,
                 current_price=current_price,
                 market_value=market_value,
                 unrealized_pl=unrealized_pl,
                 unrealized_pl_pct=unrealized_pl_pct,
                 sector=sector,
-                first_buy_date=holding.get("firstBuyDate"),
-            )
-            positions.append(position)
+                first_buy_date=data.get("first_date"),
+            ))
+            total_market += market_value
             total_invested += investment
             sector_totals[sector] = sector_totals.get(sector, 0) + market_value
 
-        total_market = sum(p.market_value for p in positions)
-        total_value = total_market + cash
+        # ── 4. Totals ──────────────────────────────────────────────────────────
+        # Prefer Ghostfolio's own total (more accurate than our sum when prices
+        # are stale or market is closed).
+        total_value = api_total if api_total > 0 else (total_market + cash)
 
         # Compute weights
         for p in positions:
             p.weight_pct = (p.market_value / total_value * 100) if total_value > 0 else 0
 
-        sector_weights = {}
-        for sector, val in sector_totals.items():
-            sector_weights[sector] = (val / total_value * 100) if total_value > 0 else 0
+        sector_weights = {
+            sector: (val / total_value * 100) if total_value > 0 else 0
+            for sector, val in sector_totals.items()
+        }
 
         total_pl = total_market - total_invested
-        total_pl_pct = (total_pl / total_invested * 100) if total_invested > 0 else 0
+        total_pl_pct = (total_pl / total_invested * 100) if total_invested > 0 else 0.0
 
         state = PortfolioState(
             account_id=account_id,

@@ -74,6 +74,18 @@ class WatchlistManager:
         for s in self._load_suggestions():
             _add(s)
 
+        # Research agent suggestions (today's brief)
+        try:
+            from .research_agent import ResearchAgent
+            brief = ResearchAgent.load_today()
+            if brief:
+                research_syms = [s["symbol"] for s in brief.get("top_symbols", [])]
+                logger.debug("watchlist_research_symbols", count=len(research_syms))
+                for s in research_syms:
+                    _add(s)
+        except Exception as e:
+            logger.warning("watchlist_research_load_failed", error=str(e))
+
         logger.info(
             "watchlist_built",
             account=self.account_key,

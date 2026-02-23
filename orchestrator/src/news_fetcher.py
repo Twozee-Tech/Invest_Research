@@ -14,11 +14,20 @@ logger = structlog.get_logger()
 NEWS_CACHE_TTL = 900  # 15 minutes
 
 RSS_FEEDS = {
+    # Financial
     "yahoo_finance": "https://finance.yahoo.com/news/rssindex",
     "cnbc_top": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114",
     "cnbc_market": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
     "reuters_business": "https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best",
     "marketwatch": "http://feeds.marketwatch.com/marketwatch/topstories/",
+    "wsj_markets": "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
+    "investing_com": "https://www.investing.com/rss/news.rss",
+    # Geopolitical
+    "reuters_world": "https://feeds.reuters.com/reuters/worldNews",
+    "bbc_business": "https://feeds.bbci.co.uk/news/business/rss.xml",
+    "bbc_world": "https://feeds.bbci.co.uk/news/world/rss.xml",
+    "ap_top": "https://feeds.apnews.com/rss/apf-topnews",
+    "aljazeera": "https://www.aljazeera.com/xml/rss/all.xml",
 }
 
 
@@ -38,6 +47,7 @@ class NewsFetcher:
     def __init__(self, cache_ttl: int = NEWS_CACHE_TTL):
         self._cache: dict[str, tuple[list[NewsItem], float]] = {}
         self._cache_ttl = cache_ttl
+        self._article_cache: dict[str, str] = {}
 
     def fetch_news(self, max_items: int = 20) -> list[NewsItem]:
         """Fetch latest financial news from all RSS feeds."""
@@ -130,6 +140,55 @@ class NewsFetcher:
             returned=len(result),
         )
         return result
+
+    def fetch_full_article(self, url: str, max_chars: int = 3000) -> str:
+        """Fetch and extract plain text from article URL.
+
+        Returns empty string on any error (graceful degradation).
+        """
+        cached = self._article_cache.get(url)
+        if cached:
+            return cached
+
+        try:
+            import httpx
+            from bs4 import BeautifulSoup
+            resp = httpx.get(
+                url,
+                timeout=8.0,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; ResearchBot/1.0)"},
+                follow_redirects=True,
+            )
+            soup = BeautifulSoup(resp.text, "html.parser")
+            for tag in soup(["script", "style", "nav", "header", "footer", "aside", "form"]):
+                tag.decompose()
+            text = soup.get_text(separator=" ", strip=True)
+            text = " ".join(text.split())
+            result = text[:max_chars]
+            self._article_cache[url] = result
+            return result
+        except Exception as e:
+            logger.debug("article_fetch_failed", url=url[:60], error=str(e))
+            return ""
+
+    def fetch_news_with_articles(
+        self,
+        max_items: int = 40,
+        max_article_chars: int = 3000,
+    ) -> list[NewsItem]:
+        """Fetch news from all feeds (financial + geopolitical) with full article text.
+
+        Used by ResearchAgent — broader and richer than fetch_relevant_news().
+        """
+        all_items = self.fetch_news(max_items=max_items * 2)
+
+        for item in all_items[:max_items]:
+            if item.link and (not item.summary or len(item.summary) < 200):
+                full = self.fetch_full_article(item.link, max_chars=max_article_chars)
+                if full:
+                    item.summary = full
+
+        return all_items[:max_items]
 
     def _parse_feed(self, url: str, source: str) -> list[NewsItem]:
         """Parse a single RSS feed."""

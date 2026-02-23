@@ -76,6 +76,7 @@ class OptionsRiskManager:
         active_positions: list[OptionsPosition],
         portfolio: PortfolioState,
         portfolio_greeks=None,      # optional; only used for delta warning
+        market_data: dict | None = None,   # symbol → {price, ...}
     ) -> OptionsRiskResult:
         """Validate all wheel actions and auto-close rules.
 
@@ -144,6 +145,7 @@ class OptionsRiskManager:
             1 for p in open_csps if p.id not in closing_ids
         )
         cash_available = cash   # we will decrement as we approve CSPs
+        md = market_data or {}
 
         for action in decision.actions:
             if action.type != "SELL_CSP":
@@ -162,17 +164,20 @@ class OptionsRiskManager:
                 result.modifications.append(f"[REJECTED CSP] {symbol}: {reason}")
                 continue
 
-            # 2. Cash reserve: approximate assignment cost
-            #    (strike unknown yet, so estimate using current price as proxy)
+            # 2. Cash reserve: approximate assignment cost using market price.
+            #    A CSP requires strike × 100 in cash as collateral.
+            #    We don't know the exact strike yet (executor picks it), so use
+            #    current price × 100 as a conservative upper bound.
             estimated_assignment = _estimate_assignment_cost(
-                action, portfolio, account_value
+                action, portfolio, account_value, md.get(symbol, {})
             )
             cash_after = cash_available - estimated_assignment
             cash_after_pct = cash_after / account_value * 100
             if cash_after_pct < self.min_cash_pct:
                 reason = (
-                    f"Would breach min cash reserve: ${cash_after:,.0f} "
-                    f"({cash_after_pct:.1f}%) < {self.min_cash_pct}%"
+                    f"Insufficient cash: need ≈${estimated_assignment:,.0f} collateral "
+                    f"for {symbol} CSP but only ${cash_available:,.0f} available "
+                    f"(would leave {cash_after_pct:.1f}% < {self.min_cash_pct}% min)"
                 )
                 result.rejected_opens.append({"instruction": action, "reason": reason})
                 result.modifications.append(f"[REJECTED CSP] {symbol}: {reason}")
@@ -278,17 +283,25 @@ def _estimate_assignment_cost(
     action: WheelAction,
     portfolio: PortfolioState,
     account_value: float,
+    symbol_market_data: dict | None = None,
 ) -> float:
     """Estimate cash needed to cover potential assignment for a CSP.
 
-    If the LLM supplied a strike hint, use strike × 100 × contracts.
-    Otherwise fall back to 10% of account value as a conservative estimate.
+    Priority:
+      1. LLM-supplied strike hint (most accurate)
+      2. Current market price × 100 (conservative — actual OTM strike will be slightly less)
+      3. Fallback: 50% of account value (forces rejection for unknown symbols)
     """
     contracts = max(1, action.contracts)
     if action.strike and action.strike > 0:
         return action.strike * 100 * contracts
-    # Fallback: 10% of account per position
-    return account_value * 0.10 * contracts
+    if symbol_market_data:
+        price = symbol_market_data.get("price", 0) or 0
+        if price > 0:
+            # Use current price as upper bound; actual OTM strike will be somewhat lower
+            return price * 100 * contracts
+    # Unknown price → assume worst case to prevent approving unaffordable CSPs
+    return account_value * 0.50 * contracts
 
 
 def _earnings_flag_in_reason(reason: str) -> bool:

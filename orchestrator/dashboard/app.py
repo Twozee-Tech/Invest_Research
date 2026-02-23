@@ -20,6 +20,8 @@ settings = st.Page("pages/settings.py", title="Settings", icon="🔧")
 
 options_positions = st.Page("pages/options_positions.py", title="Options Spreads", icon="📈")
 backtesting = st.Page("pages/backtesting.py", title="Backtesting", icon="🔄")
+research = st.Page("pages/research.py", title="Research Agent", icon="🔍")
+wiki = st.Page("pages/wiki.py", title="Wiki", icon="📖")
 
-pg = st.navigation([overview, account_detail, run_control, options_positions, backtesting, model_compare, audit_logs, account_mgmt, settings])
+pg = st.navigation([overview, account_detail, run_control, options_positions, backtesting, research, model_compare, audit_logs, account_mgmt, settings, wiki])
 pg.run()

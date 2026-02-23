@@ -103,6 +103,7 @@ def build_options_pass2_messages(
     active_positions: list[OptionsPosition],
     portfolio_greeks: PortfolioGreeks,
     decision_history: str = "",
+    market_data: dict | None = None,
 ) -> list[dict]:
     """Pass 2: Decide concrete Wheel Strategy actions.
 
@@ -142,16 +143,31 @@ def build_options_pass2_messages(
         "  • Be selective — quality over quantity."
     )
 
+    # Build watchlist with per-symbol price and CSP collateral so the LLM
+    # immediately knows which symbols fit the available cash
+    md = market_data or {}
+    watchlist_lines = []
+    for sym in watchlist:
+        price = md.get(sym, {}).get("price", 0) or 0
+        if price:
+            collateral = int(price * 100)
+            fits = "✓ fits" if collateral <= portfolio.cash * 0.95 else "✗ too large for current cash"
+            watchlist_lines.append(f"  {sym}: ${price:.2f}  → 1 CSP collateral ≈ ${collateral:,}  {fits}")
+        else:
+            watchlist_lines.append(f"  {sym}")
+    watchlist_text = "\n".join(watchlist_lines) if watchlist_lines else ", ".join(watchlist)
+
     user = f"""== STRATEGY: {strategy_desc} ==
 
 == MARKET ANALYSIS (Pass 1) ==
 {json.dumps(analysis_json, indent=2)}
 
 == CURRENT PORTFOLIO ==
-Cash: ${portfolio.cash:,.2f} ({portfolio.cash_pct:.1f}% of account)
+Cash available: ${portfolio.cash:,.2f} ({portfolio.cash_pct:.1f}% of account)
 Total value: ${portfolio.total_value:,.2f}
 Open CSP/CC positions: {len(active_positions)}
 Net theta: ${portfolio_greeks.total_theta:+.2f}/day
+NOTE: For a CSP, the full strike × 100 is held as collateral. Only select symbols where the collateral fits your available cash.
 
 == ACTIVE WHEEL POSITIONS ==
 {pos_text}
@@ -159,8 +175,8 @@ Net theta: ${portfolio_greeks.total_theta:+.2f}/day
 == RISK RULES ==
 {risk_text}
 
-== AVAILABLE WATCHLIST ==
-{", ".join(watchlist)}
+== AVAILABLE WATCHLIST (with CSP collateral requirement) ==
+{watchlist_text}
 
 == YOUR PREVIOUS DECISIONS ==
 {decision_history or "No history yet."}

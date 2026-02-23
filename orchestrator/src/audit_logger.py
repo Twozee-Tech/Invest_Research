@@ -101,6 +101,7 @@ class AuditLogger:
         portfolio_before: dict | None = None,
         portfolio_after: dict | None = None,
         error: str | None = None,
+        fees_paid: float = 0.0,
     ) -> str:
         """Log a full decision cycle.
 
@@ -130,6 +131,7 @@ class AuditLogger:
                 "rejected_actions": rejected_actions or [],
             },
             "executed_trades": executed_trades or [],
+            "fees_paid": fees_paid,
             "portfolio_before": portfolio_before,
             "portfolio_after": portfolio_after,
             "error": error,
@@ -144,6 +146,9 @@ class AuditLogger:
         analysis = pass1_response if isinstance(pass1_response, dict) else {}
         decision = pass2_response if isinstance(pass2_response, dict) else {}
         p_before = portfolio_before if isinstance(portfolio_before, dict) else {}
+        # Use portfolio_after for display values — it reflects post-trade state
+        # (cash updated; total_value still approximate until next Ghostfolio sync)
+        p_after = portfolio_after if isinstance(portfolio_after, dict) else p_before
 
         try:
             with sqlite3.connect(self.db_path) as conn:
@@ -165,9 +170,9 @@ class AuditLogger:
                         len(decision.get("actions", [])),
                         len(forced_actions or []),
                         len(rejected_actions or []),
-                        p_before.get("total_value"),
-                        p_before.get("total_pl_pct"),
-                        p_before.get("cash"),
+                        p_after.get("total_value", p_before.get("total_value")),
+                        p_after.get("total_pl_pct", p_before.get("total_pl_pct")),
+                        p_after.get("cash", p_before.get("cash")),
                         str(log_file),
                         0 if error else 1,
                         error,

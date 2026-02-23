@@ -17,6 +17,7 @@ def build_pass1_messages(
     strategy_config: dict,
     earnings_text: str = "",
     fundamentals_text: str = "",
+    research_brief: dict | None = None,
 ) -> list[dict[str, str]]:
     """Build messages for Pass 1: Market Analysis.
 
@@ -114,6 +115,10 @@ def build_pass1_messages(
         user_parts += ["", fundamentals_text]
     if earnings_text:
         user_parts += ["", earnings_text]
+    if research_brief:
+        brief_text = format_research_brief(research_brief)
+        if brief_text:
+            user_parts += ["", brief_text]
     user_parts += [
         "",
         decision_history,
@@ -231,6 +236,51 @@ def build_pass2_messages(
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
+
+
+def format_research_brief(brief: dict) -> str:
+    """Format daily research brief for LLM prompt injection."""
+    if not brief:
+        return ""
+    lines = ["== DAILY RESEARCH BRIEF (pre-market analysis) =="]
+
+    regime = brief.get("market_regime", "")
+    themes = brief.get("key_themes", [])
+    macro = brief.get("macro_events_today", "")
+
+    if regime:
+        lines.append(f"Market regime: {regime}")
+    if themes:
+        lines.append(f"Key themes: {', '.join(themes)}")
+    if macro:
+        lines.append(f"Macro events today: {macro}")
+
+    symbols = brief.get("top_symbols", [])
+    if symbols:
+        lines.append("\nTop research picks:")
+        for s in symbols:
+            conviction = s.get("conviction", "")
+            direction = s.get("direction", "")
+            tag = f"[{conviction}/{direction}]" if conviction else ""
+            lines.append(
+                f"  {s['symbol']} {tag}: {s.get('thesis', '')} "
+                f"| catalyst: {s.get('catalyst', 'N/A')}"
+            )
+
+    geo_risks = brief.get("geopolitical_risks", [])
+    if geo_risks:
+        lines.append("\nGeopolitical risks:")
+        for r in geo_risks:
+            lines.append(
+                f"  {r.get('event', '')}: {r.get('market_impact', '')} "
+                f"(sectors: {', '.join(r.get('affected_sectors', []))})"
+            )
+
+    avoid = brief.get("avoid_today", [])
+    if avoid:
+        lines.append(f"\nAvoid today: {', '.join(str(a) for a in avoid)}")
+
+    return "\n".join(lines)
 
 
 def format_decision_history(history: list[dict], max_entries: int = 4) -> str:

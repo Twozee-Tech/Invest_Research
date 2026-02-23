@@ -82,7 +82,14 @@ class GhostfolioClient:
             payload["balance"] = balance
         if currency is not None:
             payload["currency"] = currency
-        return self._request("PATCH", f"/api/v1/account/{account_id}", json=payload)
+        # Ghostfolio requires PUT with id and platformId
+        existing = self.get_account(account_id)
+        payload.setdefault("id", account_id)
+        payload.setdefault("name", existing.get("name", ""))
+        payload.setdefault("currency", existing.get("currency", "USD"))
+        payload.setdefault("isExcluded", existing.get("isExcluded", False))
+        payload.setdefault("platformId", existing.get("platformId") or "")
+        return self._request("PUT", f"/api/v1/account/{account_id}", json=payload)
 
     def create_account(
         self,

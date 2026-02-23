@@ -8,6 +8,7 @@ import subprocess
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from dashboard.config_utils import load_config
+from dashboard.pages.overview import cron_to_human, next_run_time
 
 
 st.title("Run Control")
@@ -27,7 +28,11 @@ for key, acct in accounts.items():
     col1, col2, col3 = st.columns([3, 1, 1])
 
     with col1:
-        st.write(f"**{name}** ({acct.get('model', 'N/A')}) - `{acct.get('cron', '')}`")
+        cron = acct.get("cron", "")
+        human = cron_to_human(cron)
+        nxt = next_run_time(cron)
+        st.write(f"**{name}** · {acct.get('model', 'N/A')}")
+        st.caption(f"🕐 {human}  ·  📅 {nxt}")
 
     with col2:
         if st.button(f"Run Now", key=f"run_{key}"):
