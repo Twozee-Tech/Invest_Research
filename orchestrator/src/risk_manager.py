@@ -59,8 +59,9 @@ class RiskManager:
         self.min_cash_pct = risk_profile.get("min_cash_pct", 10)
         self.max_trades_per_cycle = risk_profile.get("max_trades_per_cycle", 5)
         self.stop_loss_pct = risk_profile.get("stop_loss_pct", -15)
-        self.min_holding_days = risk_profile.get("min_holding_days", 14)
+        self.min_holding_days = risk_profile.get("min_holding_days", 0)
         self.min_holding_hours = risk_profile.get("min_holding_hours", 0)
+        self.min_order_usd = risk_profile.get("min_order_usd", 0)
         self.max_sector_exposure_pct = risk_profile.get("max_sector_exposure_pct", 40)
         self._sim_date = sim_date  # None = use datetime.now()
 
@@ -250,6 +251,14 @@ class RiskManager:
             )
             check.modified = True
             check.modification_reason = f"Trimmed to respect {self.max_position_pct}% max position"
+
+        # Rule: Minimum order size (after all trimming)
+        if self.min_order_usd > 0 and check.action.amount_usd < self.min_order_usd:
+            check.approved = False
+            check.rejection_reason = (
+                f"Order too small after trimming: ${check.action.amount_usd:.2f} < ${self.min_order_usd} min"
+            )
+            return check
 
         return check
 

@@ -1149,7 +1149,7 @@ def main():
         cycle_type = acct.get("cycle_type", "standard")
         try:
             cron_kwargs = parse_cron(cron_str)
-            trigger = CronTrigger(**cron_kwargs)
+            trigger = CronTrigger(**cron_kwargs, timezone="Europe/Warsaw")
             if cycle_type == "research":
                 job_fn = orch.run_research_cycle
                 grace = 1800  # 30 min grace (heavy LLM call)
