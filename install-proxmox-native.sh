@@ -72,16 +72,29 @@ echo -e "${YELLOW}[2/6] Finding Debian 12 LXC template...${NC}"
 TEMPLATE_FILE=$(find /var/lib/vz/template/cache/ -name "debian-12-*${ARCH}*.tar.*" 2>/dev/null | sort -V | tail -1 || true)
 
 if [[ -z "$TEMPLATE_FILE" ]]; then
-    info "Downloading template from Proxmox mirrors..."
+    info "Not found locally — checking Proxmox mirrors..."
     pveam update 2>/dev/null || true
     TEMPLATE_NAME=$(pveam available --section system 2>/dev/null \
         | awk '{print $2}' | grep -E "debian-12.*${ARCH}" | sort -V | tail -1 || true)
-    if [[ -z "$TEMPLATE_NAME" ]]; then
-        err "No Debian 12 ${ARCH} template found. Run: pveam update"
-        exit 1
+
+    if [[ -n "$TEMPLATE_NAME" ]]; then
+        pveam download local "$TEMPLATE_NAME"
+        TEMPLATE_FILE="/var/lib/vz/template/cache/$TEMPLATE_NAME"
+    else
+        # Proxmox mirrors don't carry arm64 templates — download from linuxcontainers.org
+        warn "Proxmox mirrors have no ${ARCH} template. Downloading from linuxcontainers.org..."
+        LC_BASE="https://images.linuxcontainers.org/images/debian/bookworm/${ARCH}/default"
+        LC_VER=$(curl -s "${LC_BASE}/" | grep -oP '\d{8}_\d+:\d+' | tail -1)
+        if [[ -z "$LC_VER" ]]; then
+            err "Could not fetch template list from linuxcontainers.org"
+            exit 1
+        fi
+        TEMPLATE_FILE="/var/lib/vz/template/cache/debian-12-standard_${ARCH}.tar.xz"
+        info "Downloading ${LC_VER} rootfs (~100 MB)..."
+        wget -q --show-progress \
+            "${LC_BASE}/${LC_VER}/rootfs.tar.xz" \
+            -O "$TEMPLATE_FILE"
     fi
-    pveam download local "$TEMPLATE_NAME"
-    TEMPLATE_FILE="/var/lib/vz/template/cache/$TEMPLATE_NAME"
 fi
 ok "Template: $(basename "$TEMPLATE_FILE")"
 TEMPLATE_STOR="local:vztmpl/$(basename "$TEMPLATE_FILE")"
