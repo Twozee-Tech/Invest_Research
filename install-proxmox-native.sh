@@ -30,8 +30,7 @@ ask() {
 ask_secret() {
     local reply
     printf "%b" "$1" > /dev/tty
-    read -rs reply < /dev/tty
-    echo "" > /dev/tty
+    read -r reply < /dev/tty
     echo "$reply"
 }
 
@@ -122,13 +121,16 @@ DISK=$(ask  "  Disk GB [4]: " "4")
 CORES=$(ask "  CPU cores [1]: " "1")
 
 echo ""
-IP_CONFIG=$(ask "  IP (e.g. 192.168.0.50/24 or dhcp) [dhcp]: " "dhcp")
-if [[ "$IP_CONFIG" == "dhcp" ]]; then
-    NET_IP="ip=dhcp"
-else
-    GW=$(ask "  Gateway [192.168.0.1]: " "192.168.0.1")
-    NET_IP="ip=${IP_CONFIG},gw=${GW}"
-fi
+# Suggest next free IP by scanning existing CT configs
+LAST_IP=$(grep -h '^net0:' /etc/pve/lxc/*.conf 2>/dev/null \
+    | grep -oE 'ip=[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' \
+    | grep -oE '[0-9]+$' | sort -n | tail -1)
+SUGGEST_LAST=$(( ${LAST_IP:-12} + 1 ))
+DEFAULT_IP="192.168.0.${SUGGEST_LAST}/24"
+
+CT_IP=$(ask "  Container IP [${DEFAULT_IP}]: " "$DEFAULT_IP")
+GW=$(ask   "  Gateway [192.168.0.1]: " "192.168.0.1")
+NET_IP="ip=${CT_IP},gw=${GW}"
 
 # ── 4. credentials ────────────────────────────────────────────────────────────
 echo ""
