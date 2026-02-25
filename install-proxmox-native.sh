@@ -155,12 +155,19 @@ INITIAL_BUDGET=$(ask "  Initial budget per account USD [10000]: " "10000")
 echo ""
 echo -e "${YELLOW}[5/6] Creating LXC ${CTID}...${NC}"
 
+# Auto-detect bridge used by existing containers (works for non-standard setups like NanoPi)
+BRIDGE=$(grep -h 'bridge=' /etc/pve/lxc/*.conf 2>/dev/null \
+    | grep -oE 'bridge=[^,]+' | cut -d= -f2 \
+    | sort | uniq -c | sort -rn | awk 'NR==1{print $2}')
+BRIDGE=${BRIDGE:-vmbr0}
+info "Using network bridge: ${BRIDGE}"
+
 pct create "$CTID" "$TEMPLATE_STOR" \
     --hostname "$HOSTNAME" \
     --memory   "$RAM" \
     --cores    "$CORES" \
     --rootfs   "${STORAGE}:${DISK}" \
-    --net0     "name=eth0,bridge=vmbr0,${NET_IP}" \
+    --net0     "name=eth0,bridge=${BRIDGE},${NET_IP}" \
     --unprivileged 1 \
     --ostype   debian \
     --start    1 \
@@ -174,6 +181,9 @@ sleep 6
 echo ""
 echo -e "${YELLOW}[6/6] Provisioning (Python 3.12 + deps)...${NC}"
 info "This takes 3–5 minutes on first run (compiling packages)."
+
+# Build supervisor environment string in outer shell (heredoc expansion happens here)
+ENV_INLINE="GHOSTFOLIO_URL=\"${GHOSTFOLIO_URL}\",GHOSTFOLIO_ACCESS_TOKEN=\"${GHOSTFOLIO_TOKEN}\",LLM_BASE_URL=\"${LLM_URL}\",INITIAL_BUDGET=\"${INITIAL_BUDGET}\",LOG_LEVEL=\"INFO\",TZ=\"Europe/Warsaw\""
 
 pct exec "$CTID" -- bash -euo pipefail << PROVISION
 export DEBIAN_FRONTEND=noninteractive
@@ -214,8 +224,6 @@ TZ=Europe/Warsaw
 EOF
 
 # ---- supervisor config ----
-ENV_INLINE="GHOSTFOLIO_URL=\"${GHOSTFOLIO_URL}\",GHOSTFOLIO_ACCESS_TOKEN=\"${GHOSTFOLIO_TOKEN}\",LLM_BASE_URL=\"${LLM_URL}\",INITIAL_BUDGET=\"${INITIAL_BUDGET}\",LOG_LEVEL=\"INFO\",TZ=\"Europe/Warsaw\""
-
 cat > /etc/supervisor/conf.d/invest.conf << SUPCONF
 [program:scheduler]
 command=${APP_DIR}/.venv/bin/python -m src.main
