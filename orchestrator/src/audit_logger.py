@@ -107,7 +107,7 @@ class AuditLogger:
 
         Returns the path to the log file.
         """
-        now = datetime.utcnow()
+        now = datetime.now()
         date_str = now.strftime("%Y-%m-%d")
         time_str = now.strftime("%H%M%S")
 

@@ -121,59 +121,91 @@ try:
 except Exception:
     pass  # Ghostfolio unavailable — fall back to audit log values
 
-# Account cards
-# Skip non-trading accounts (research agent) from the display grid
+# Account cards — grouped by strategy
 trading_accounts = {k: v for k, v in accounts.items() if v.get("cycle_type") != "research"}
-cols = st.columns(max(len(trading_accounts), 1))
 
 audit = AuditLogger()
+initial_budget = config.get("defaults", {}).get("initial_budget", 10000)
 
-for i, (key, acct) in enumerate(trading_accounts.items()):
-    with cols[i]:
-        name = acct.get("name", key)
-        model = acct.get("model", "Unknown")
-        cron = acct.get("cron", "")
-        strategy = acct.get("strategy", "")
+# Group accounts by strategy
+_STRATEGY_LABELS = {
+    "core_satellite": "Core-Satellite",
+    "value_investing": "Value Investing",
+    "momentum": "Momentum",
+    "wheel": "Wheel Strategy",
+    "vertical_spreads": "Options Spreads",
+}
+groups: dict[str, list[tuple[str, dict]]] = {}
+for key, acct in trading_accounts.items():
+    strategy = acct.get("strategy", "other")
+    # Separate intraday momentum from daily momentum
+    if strategy == "momentum" and acct.get("cycle_type") == "intraday":
+        strategy = "intraday"
+    groups.setdefault(strategy, []).append((key, acct))
 
-        # Get latest log for this account
-        logs = audit.get_recent_logs(account_key=key, limit=1)
-        latest = logs[0] if logs else {}
+_GROUP_ORDER = ["core_satellite", "value_investing", "momentum", "intraday", "wheel", "vertical_spreads"]
+_GROUP_ICONS = {
+    "core_satellite": "🏛️",
+    "value_investing": "💎",
+    "momentum": "🚀",
+    "intraday": "⚡",
+    "wheel": "🎡",
+    "vertical_spreads": "📈",
+}
 
-        last_regime = latest.get("market_regime", "N/A")
-        success = latest.get("success", 1)
+for strategy_key in _GROUP_ORDER:
+    acct_list = groups.get(strategy_key)
+    if not acct_list:
+        continue
 
-        initial_budget = config.get("defaults", {}).get("initial_budget", 10000)
+    icon = _GROUP_ICONS.get(strategy_key, "📊")
+    label = _STRATEGY_LABELS.get(strategy_key, strategy_key.replace("_", " ").title())
+    if strategy_key == "intraday":
+        label = "Intraday Momentum"
+    st.subheader(f"{icon} {label}")
 
-        # Live value from Ghostfolio (preferred) or audit log (fallback)
-        acct_id = acct.get("ghostfolio_account_id", "")
-        live = _live_values.get(acct_id, {})
-        if live.get("total"):
-            value = live["total"]
-            pl_pct = (value - initial_budget) / initial_budget * 100 if initial_budget else None
-        else:
-            value = latest.get("portfolio_value")
-            pl_pct = latest.get("portfolio_pl_pct")
+    cols = st.columns(len(acct_list))
+    for i, (key, acct) in enumerate(acct_list):
+        with cols[i]:
+            name = acct.get("name", key)
+            model = acct.get("model", "Unknown")
+            cron = acct.get("cron", "")
 
-        st.subheader(name)
-        if value is not None:
-            delta = f"{pl_pct:+.2f}%" if pl_pct is not None else None
-            st.metric("Portfolio Value", f"${value:,.2f}", delta=delta)
-        else:
-            st.metric("Portfolio Value", f"${initial_budget:,.2f}", delta="New")
+            logs = audit.get_recent_logs(account_key=key, limit=1)
+            latest = logs[0] if logs else {}
 
-        st.caption(f"Model: **{model}** | Strategy: **{strategy}**")
-        human = cron_to_human(cron)
-        nxt = next_run_time(cron)
-        st.caption(f"🕐 {human}")
-        if nxt:
-            st.caption(f"📅 {nxt}")
-        st.caption(f"Market: {last_regime}")
+            last_regime = latest.get("market_regime", "N/A")
+            success = latest.get("success", 1)
 
-        status = "OK" if success else "ERROR"
-        if success:
-            st.success(f"Status: {status}")
-        else:
-            st.error(f"Status: {status}")
+            acct_id = acct.get("ghostfolio_account_id", "")
+            live = _live_values.get(acct_id, {})
+            if live.get("total"):
+                value = live["total"]
+                pl_pct = (value - initial_budget) / initial_budget * 100 if initial_budget else None
+            else:
+                value = latest.get("portfolio_value")
+                pl_pct = latest.get("portfolio_pl_pct")
+
+            st.markdown(f"**{name}**")
+            if value is not None:
+                delta = f"{pl_pct:+.2f}%" if pl_pct is not None else None
+                st.metric("Portfolio Value", f"${value:,.2f}", delta=delta)
+            else:
+                st.metric("Portfolio Value", f"${initial_budget:,.2f}", delta="New")
+
+            st.caption(f"Model: **{model}**")
+            human = cron_to_human(cron)
+            nxt = next_run_time(cron)
+            st.caption(f"🕐 {human}")
+            if nxt:
+                st.caption(f"📅 {nxt}")
+            st.caption(f"Market: {last_regime}")
+
+            status = "OK" if success else "ERROR"
+            if success:
+                st.success(f"Status: {status}")
+            else:
+                st.error(f"Status: {status}")
 
 st.divider()
 

@@ -1,0 +1,32 @@
+services:
+  # Production compose — uses pre-built image from GHCR instead of building locally.
+  # Image is built automatically by GitHub Actions on push to main (amd64 + arm64).
+  # See: .github/workflows/docker-publish.yml
+  #
+  # Requires: docker login ghcr.io -u GITHUB_USER -p GITHUB_TOKEN (read:packages)
+  # Pull:     docker compose -f docker-compose.prod.yml pull
+
+  orchestrator:
+    image: ghcr.io/twozee-tech/invest-orchestrator:latest
+    ports:
+      - "8501:8501"    # Streamlit dashboard
+    environment:
+      TZ: Europe/Warsaw
+      GHOSTFOLIO_URL: ${GHOSTFOLIO_URL:-http://192.168.0.12:3333}
+      GHOSTFOLIO_ACCESS_TOKEN: ${GHOSTFOLIO_ACCESS_TOKEN:?Set GHOSTFOLIO_ACCESS_TOKEN in .env}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://192.168.0.169:8080/v1}
+      INITIAL_BUDGET: ${INITIAL_BUDGET:-10000}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - invest_data:/app/data
+      - invest_logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+volumes:
+  invest_data:
+  invest_logs:

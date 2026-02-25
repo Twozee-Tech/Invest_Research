@@ -40,6 +40,10 @@ from .options.greeks import calculate_portfolio_greeks, PortfolioGreeks
 from .options.positions import OptionsPositionTracker
 from .options.prompt_builder import build_options_pass1_messages, build_options_pass2_messages
 from .options.risk_manager import OptionsRiskManager
+from .options.spreads_decision_parser import parse_spreads_decision
+from .options.spreads_executor import SpreadsExecutor
+from .options.spreads_prompt_builder import build_spreads_pass1_messages, build_spreads_pass2_messages
+from .options.spreads_risk_manager import SpreadsRiskManager, SpreadsRiskResult
 
 structlog.configure(
     processors=[
@@ -76,6 +80,14 @@ class Orchestrator:
     def _load_config(self) -> None:
         with open(self.config_path) as f:
             self.config = yaml.safe_load(f)
+
+    @staticmethod
+    def _is_wheel_account(acct: dict) -> bool:
+        return acct.get("strategy") == "wheel"
+
+    @staticmethod
+    def _is_spreads_account(acct: dict) -> bool:
+        return acct.get("strategy") == "vertical_spreads"
 
     @staticmethod
     def _is_options_account(acct: dict) -> bool:
@@ -829,6 +841,275 @@ class Orchestrator:
         logger.info("cycle_complete", account=account_name, status=status, log=log_file)
 
 
+    def run_spreads_cycle(self, account_key: str) -> None:
+        """Run a full decision cycle for a vertical_spreads account.
+
+        Phases:
+          1. Gather context (portfolio, active positions, option chains, Greeks)
+          2. LLM Pass 1: Market + IV analysis
+          3. LLM Pass 2: Open/close spread decisions
+          4. Risk validation (auto-close rules + LLM decision validation)
+          5. Execution (closes -> opens -> updates)
+          6. Audit logging
+        """
+        self._load_config()
+        acct = self.config.get("accounts", {}).get(account_key)
+        if not acct:
+            logger.error("spreads_account_not_found", key=account_key)
+            return
+
+        account_name = acct.get("name", account_key)
+        account_id = acct.get("ghostfolio_account_id", "")
+        model = acct.get("model", "Qwen3-Next")
+        fallback = acct.get("fallback_model")
+        risk_profile = acct.get("risk_profile", {})
+        watchlist = acct.get("watchlist", [])
+
+        logger.info("spreads_cycle_start", account=account_name, model=model, dry_run=self.dry_run)
+        error_msg = None
+        pass1_messages: list = []
+        pass2_messages: list = []
+        analysis_raw: dict = {}
+        decision_raw: dict = {}
+        executed_trades: list = []
+        portfolio_before: dict = {}
+        portfolio_after: dict = {}
+
+        tracker = OptionsPositionTracker()
+        risk_result = None
+
+        try:
+            # ===== PHASE 1: GATHER CONTEXT =====
+            logger.info("spreads_phase1_context", account=account_name)
+
+            portfolio = get_portfolio_state(self.ghostfolio, account_id, account_name)
+            portfolio_before = {
+                "total_value": portfolio.total_value,
+                "cash": portfolio.cash,
+                "positions": portfolio.position_count,
+                "total_pl_pct": portfolio.total_pl_pct,
+            }
+
+            active_positions = tracker.get_active_positions(account_key)
+            logger.info("spreads_active_positions", count=len(active_positions))
+
+            # If no watchlist configured, try to get symbols from research agent
+            if not watchlist:
+                watchlist_mgr = WatchlistManager(
+                    account_key=account_key,
+                    core=[],
+                )
+                watchlist = watchlist_mgr.get_full_watchlist()
+                if not watchlist:
+                    logger.warning("spreads_empty_watchlist", account=account_name)
+
+            # Market data + indicators
+            quotes = self.market_data.get_quotes_batch(watchlist)
+            market_data = {}
+            for sym, q in quotes.items():
+                market_data[sym] = {
+                    "price": q.price,
+                    "change_pct": q.change_pct,
+                    "pe": q.pe_ratio,
+                    "div_yield": q.dividend_yield,
+                    "52w_high": q.week52_high,
+                    "52w_low": q.week52_low,
+                    "sector": q.sector,
+                }
+
+            tech_signals = {}
+            for sym in watchlist:
+                try:
+                    df = self.market_data.get_history(sym, period="6mo")
+                    if not df.empty:
+                        tech_signals[sym] = compute_indicators(df, sym)
+                except Exception as e:
+                    logger.warning("spreads_indicators_failed", symbol=sym, error=str(e))
+
+            # IV percentiles
+            iv_data: dict[str, float | None] = {}
+            for sym in watchlist[:8]:
+                try:
+                    iv_data[sym] = get_iv_percentile(sym)
+                except Exception:
+                    iv_data[sym] = None
+
+            # Portfolio Greeks
+            pos_dicts = [
+                {"current_greeks": p.current_greeks}
+                for p in active_positions
+                if p.current_greeks
+            ]
+            portfolio_greeks = calculate_portfolio_greeks(pos_dicts)
+
+            # News
+            news_items = self.news.fetch_relevant_news(watchlist, max_items=10)
+            news_text = self.news.format_for_prompt(news_items)
+
+            # Decision history
+            history = self.audit.get_decision_history(account_key, limit=4)
+            from .prompt_builder import format_decision_history
+            history_text = format_decision_history(history)
+
+            # ===== PHASE 2: LLM PASS 1 - ANALYSIS =====
+            logger.info("spreads_phase2_analysis", model=model)
+
+            pass1_messages = build_spreads_pass1_messages(
+                portfolio=portfolio,
+                market_data=market_data,
+                technical_signals=tech_signals,
+                news_text=news_text,
+                strategy_config=acct,
+                active_positions=active_positions,
+                iv_data=iv_data,
+                portfolio_greeks=portfolio_greeks,
+            )
+
+            analysis_raw = self.llm.chat_json(
+                messages=pass1_messages,
+                model=model,
+                fallback_model=fallback,
+                temperature=0.7,
+            )
+            logger.info(
+                "spreads_analysis_complete",
+                regime=analysis_raw.get("market_regime"),
+                iv_regime=analysis_raw.get("iv_regime"),
+            )
+
+            # ===== PHASE 3: LLM PASS 2 - DECISIONS =====
+            logger.info("spreads_phase3_decisions", model=model)
+
+            pass2_messages = build_spreads_pass2_messages(
+                analysis_json=analysis_raw,
+                portfolio=portfolio,
+                strategy_config=acct,
+                risk_profile=risk_profile,
+                active_positions=active_positions,
+                portfolio_greeks=portfolio_greeks,
+                decision_history=history_text,
+                market_data=market_data,
+            )
+
+            decision_raw = self.llm.chat_json(
+                messages=pass2_messages,
+                model=model,
+                fallback_model=fallback,
+                temperature=0.5,
+            )
+            spreads_decision = parse_spreads_decision(decision_raw)
+            logger.info(
+                "spreads_decision_complete",
+                open_new=len(spreads_decision.open_new),
+                closes=len(spreads_decision.close_positions),
+                outlook=spreads_decision.portfolio_outlook,
+            )
+
+            # ===== PHASE 4: RISK VALIDATION =====
+            logger.info("spreads_phase4_risk", account=account_name)
+
+            risk_mgr = SpreadsRiskManager(risk_profile)
+            risk_result = risk_mgr.validate(
+                decision=spreads_decision,
+                active_positions=active_positions,
+                portfolio=portfolio,
+                portfolio_greeks=portfolio_greeks,
+                market_data=market_data,
+            )
+
+            for w in risk_result.warnings:
+                logger.warning("spreads_risk_warning", warning=w)
+            for m in risk_result.modifications:
+                logger.info("spreads_risk_mod", mod=m)
+
+            # ===== PHASE 5: EXECUTION =====
+            logger.info("spreads_phase5_execution", account=account_name)
+
+            executor = SpreadsExecutor(
+                ghostfolio=self.ghostfolio,
+                market_data=self.market_data,
+                tracker=tracker,
+                account_id=account_id,
+                risk_profile=risk_profile,
+                dry_run=self.dry_run,
+                account_key=account_key,
+            )
+
+            all_closes = risk_result.forced_closes + risk_result.approved_closes
+            close_results = executor.execute_closes(all_closes, active_positions)
+            roll_results = executor.execute_rolls(risk_result.approved_rolls, active_positions)
+
+            # Refresh active positions after closes
+            updated_active = tracker.get_active_positions(account_key)
+            open_results = executor.execute_opens(risk_result.approved_opens, updated_active)
+
+            # Update held positions (P&L)
+            remaining_active = tracker.get_active_positions(account_key)
+            update_results = executor.update_active_positions(remaining_active)
+
+            # Consolidate for audit
+            for r in close_results + roll_results + open_results:
+                executed_trades.append({
+                    "type": r.action,
+                    "symbol": r.symbol,
+                    "spread_type": r.spread_type,
+                    "position_id": r.position_id,
+                    "success": r.success,
+                    "realized_pl": r.realized_pl,
+                    "error": r.error,
+                    "order_id": r.ghostfolio_order_id,
+                })
+
+            # Post-execution portfolio state
+            portfolio_after_state = get_portfolio_state(self.ghostfolio, account_id, account_name)
+            new_active = tracker.get_active_positions(account_key)
+            new_greeks = calculate_portfolio_greeks(
+                [{"current_greeks": p.current_greeks} for p in new_active if p.current_greeks]
+            )
+            portfolio_after = {
+                "total_value": portfolio_after_state.total_value,
+                "cash": portfolio_after_state.cash,
+                "positions": portfolio_after_state.position_count,
+                "total_pl_pct": portfolio_after_state.total_pl_pct,
+                "spreads_open": len(new_active),
+                "portfolio_delta": new_greeks.total_delta,
+                "portfolio_theta": new_greeks.total_theta,
+            }
+
+        except Exception as e:
+            error_msg = str(e)
+            logger.error("spreads_cycle_failed", account=account_name, error=error_msg, exc_info=True)
+
+        # ===== PHASE 6: AUDIT LOGGING =====
+        _risk_result = risk_result or SpreadsRiskResult()
+        log_file = self.audit.log_cycle(
+            account_key=account_key,
+            account_name=account_name,
+            model=model,
+            pass1_messages=pass1_messages,
+            pass1_response=analysis_raw,
+            pass2_messages=pass2_messages,
+            pass2_response=decision_raw,
+            risk_modifications=_risk_result.modifications if not error_msg else [],
+            risk_warnings=_risk_result.warnings if not error_msg else [],
+            forced_actions=[
+                {"type": "CLOSE", "symbol": f"pos_{c.position_id}", "amount": 0, "thesis": c.reason}
+                for c in (_risk_result.forced_closes if not error_msg else [])
+            ],
+            rejected_actions=[
+                {"symbol": r["instruction"].symbol, "reason": r["reason"]}
+                for r in (_risk_result.rejected_opens if not error_msg else [])
+            ],
+            executed_trades=executed_trades,
+            portfolio_before=portfolio_before,
+            portfolio_after=portfolio_after,
+            error=error_msg,
+        )
+
+        status = "ERROR" if error_msg else "OK"
+        logger.info("spreads_cycle_complete", account=account_name, status=status, log=log_file)
+
+
     def run_options_cycle(self, account_key: str) -> None:
         """Run a full decision cycle for an options spreads account.
 
@@ -1123,8 +1404,10 @@ def main():
             orch.run_research_cycle()
         elif cycle_type == "intraday":
             orch.run_intraday_cycle(args.once)
-        elif orch._is_options_account(acct_cfg):
+        elif orch._is_wheel_account(acct_cfg):
             orch.run_options_cycle(args.once)
+        elif orch._is_spreads_account(acct_cfg):
+            orch.run_spreads_cycle(args.once)
         else:
             orch.run_cycle(args.once)
         return
@@ -1137,6 +1420,10 @@ def main():
                 orch.run_research_cycle()
             elif cycle_type == "intraday":
                 orch.run_intraday_cycle(key)
+            elif orch._is_wheel_account(acct_cfg):
+                orch.run_options_cycle(key)
+            elif orch._is_spreads_account(acct_cfg):
+                orch.run_spreads_cycle(key)
             else:
                 orch.run_cycle(key)
         return
@@ -1156,6 +1443,12 @@ def main():
             elif cycle_type == "intraday":
                 job_fn = orch.run_intraday_cycle
                 grace = 300  # 5-min grace for intraday (tighter than hourly)
+            elif orch._is_wheel_account(acct):
+                job_fn = orch.run_options_cycle
+                grace = 3600
+            elif orch._is_spreads_account(acct):
+                job_fn = orch.run_spreads_cycle
+                grace = 3600
             else:
                 job_fn = orch.run_cycle
                 grace = 3600

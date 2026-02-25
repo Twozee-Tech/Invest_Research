@@ -42,16 +42,6 @@ accounts:
       - QQQ
       - VTI
       - VOO
-      - AAPL
-      - MSFT
-      - GOOGL
-      - AMZN
-      - NVDA
-      - META
-      - JPM
-      - V
-      - JNJ
-      - UNH
 
   monthly_value:
     name: "Monthly Value"
@@ -76,17 +66,6 @@ accounts:
       - VTI
       - SCHD
       - VYM
-      - BRK-B
-      - JPM
-      - PG
-      - KO
-      - JNJ
-      - PFE
-      - WMT
-      - HD
-      - CAT
-      - XOM
-      - CVX
 
   daily_momentum:
     name: "Daily Momentum"
@@ -112,17 +91,9 @@ accounts:
       - QQQ
       - TQQQ
       - SOXL
-      - NVDA
-      - AMD
-      - TSLA
-      - META
-      - COIN
-      - PLTR
-      - SOFI
-      - MARA
 
   options_spreads:
-    name: "Options Spreads"
+    name: "Wheel Strategy (Qwen)"
     ghostfolio_account_id: "4edf44b5-8181-4df5-84ad-b6cbd275638b"
     model: "Qwen3-Next"
     fallback_model: "Nemotron"
@@ -147,14 +118,7 @@ accounts:
       stop_loss_pct: 200     # 200% of premium = stop loss for shorts
       earnings_blackout_days: 5
     watchlist:
-      - BAC      # ~$53  → 1 CSP ≈ $4,500
-      - INTC     # ~$44  → 1 CSP ≈ $3,800
-      - SOFI     # ~$19  → 1 CSP ≈ $1,600
-      - T        # ~$28  → 1 CSP ≈ $2,400
-      - F        # ~$14  → 1 CSP ≈ $1,200
-      - NVDA     # ~$190 → 1 CSP ≈ $16k (only if cash allows)
-      - AAPL     # ~$264 → 1 CSP ≈ $22k (only if cash allows)
-      - SPY      # for CC after assignment
+      - SPY
 
   weekly_balanced_nemotron:
     name: "Weekly Balanced (Nemotron)"
@@ -180,16 +144,6 @@ accounts:
       - QQQ
       - VTI
       - VOO
-      - AAPL
-      - MSFT
-      - GOOGL
-      - AMZN
-      - NVDA
-      - META
-      - JPM
-      - V
-      - JNJ
-      - UNH
 
   monthly_value_nemotron:
     name: "Monthly Value (Nemotron)"
@@ -214,17 +168,6 @@ accounts:
       - VTI
       - SCHD
       - VYM
-      - BRK-B
-      - JPM
-      - PG
-      - KO
-      - JNJ
-      - PFE
-      - WMT
-      - HD
-      - CAT
-      - XOM
-      - CVX
 
   daily_momentum_nemotron:
     name: "Daily Momentum (Nemotron)"
@@ -250,17 +193,9 @@ accounts:
       - QQQ
       - TQQQ
       - SOXL
-      - NVDA
-      - AMD
-      - TSLA
-      - META
-      - COIN
-      - PLTR
-      - SOFI
-      - MARA
 
   options_spreads_nemotron:
-    name: "Options Spreads (Nemotron)"
+    name: "Wheel Strategy (Nemotron)"
     ghostfolio_account_id: "6c7e408b-90bb-4046-a43f-e2157c652972"
     model: "Nemotron"
     fallback_model: "Qwen3-Next"
@@ -285,14 +220,7 @@ accounts:
       stop_loss_pct: 200
       earnings_blackout_days: 5
     watchlist:
-      - BAC      # ~$53  → 1 CSP ≈ $4,500
-      - INTC     # ~$44  → 1 CSP ≈ $3,800
-      - SOFI     # ~$19  → 1 CSP ≈ $1,600
-      - T        # ~$28  → 1 CSP ≈ $2,400
-      - F        # ~$14  → 1 CSP ≈ $1,200
-      - NVDA     # ~$190 → 1 CSP ≈ $16k (only if cash allows)
-      - AAPL     # ~$264 → 1 CSP ≈ $22k (only if cash allows)
-      - SPY      # for CC after assignment
+      - SPY
 
   intraday_qwen:
     name: "Intraday Momentum (Qwen)"
@@ -321,12 +249,6 @@ accounts:
     watchlist:
       - SPY
       - QQQ
-      - NVDA
-      - AMD
-      - TSLA
-      - META
-      - AAPL
-      - MSFT
 
   intraday_nemotron:
     name: "Intraday Momentum (Nemotron)"
@@ -355,9 +277,49 @@ accounts:
     watchlist:
       - SPY
       - QQQ
-      - NVDA
-      - AMD
-      - TSLA
-      - META
-      - AAPL
-      - MSFT
+
+  spreads_qwen:
+    name: "Vertical Spreads (Qwen)"
+    ghostfolio_account_id: "e33ef329-aa85-433e-9658-e19501f1b805"
+    model: "Qwen3-Next"
+    fallback_model: "Nemotron"
+    broker_cost_model: "ibkr"
+    cron: "0 19 * * 4"    # Friday 19:00 CET
+    strategy: "vertical_spreads"
+    strategy_description: "Multi-leg options spreads: iron condors, butterflies, bull/bear call/put spreads for defined-risk income"
+    prompt_style: "Select optimal spread structures based on IV skew and directional bias. Use iron condors in neutral markets, butterflies for pinning targets, bull call/bear put spreads for directional plays."
+    preferred_metrics: ["IV", "IV_Skew", "Delta", "Theta", "RSI", "Trend"]
+    horizon: "weeks (DTE 21-45)"
+    risk_profile:
+      max_open_spreads: 5
+      min_cash_pct: 20
+      take_profit_pct: 50
+      stop_loss_pct: 100
+      max_spread_width: 10
+      target_dte_min: 21
+      target_dte_max: 45
+    # No hardcoded watchlist — uses research agent's dynamic picks
+    watchlist: []
+
+  spreads_nemotron:
+    name: "Vertical Spreads (Nemotron)"
+    ghostfolio_account_id: "dfb1e45f-d274-4129-bda8-010d346a5e3a"
+    model: "Nemotron"
+    fallback_model: "Qwen3-Next"
+    broker_cost_model: "ibkr"
+    cron: "20 19 * * 4"   # Friday 19:20 CET (staggered +20min vs Qwen)
+    strategy: "vertical_spreads"
+    strategy_description: "Multi-leg options spreads: iron condors, butterflies, bull/bear call/put spreads for defined-risk income"
+    prompt_style: "Select optimal spread structures based on IV skew and directional bias. Use iron condors in neutral markets, butterflies for pinning targets, bull call/bear put spreads for directional plays."
+    preferred_metrics: ["IV", "IV_Skew", "Delta", "Theta", "RSI", "Trend"]
+    horizon: "weeks (DTE 21-45)"
+    risk_profile:
+      max_open_spreads: 5
+      min_cash_pct: 20
+      take_profit_pct: 50
+      stop_loss_pct: 100
+      max_spread_width: 10
+      target_dte_min: 21
+      target_dte_max: 45
+    # No hardcoded watchlist — uses research agent's dynamic picks
+    watchlist: []

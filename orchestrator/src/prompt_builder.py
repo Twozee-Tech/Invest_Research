@@ -196,6 +196,13 @@ def build_pass2_messages(
             "- Do NOT buy if RSI > 70 (overbought) without an extraordinary fundamental discount.\n"
         )
 
+    buying_power = max(0, portfolio.cash - portfolio.total_value * min_cash_pct / 100)
+
+    if buying_power <= 0:
+        system_prompt += (
+            "\n⚠ HARD CONSTRAINT: buying power is $0. Do NOT propose any BUY actions.\n"
+        )
+
     system_prompt += (
         "\nYou MUST respond with valid JSON matching this schema:\n"
         "{\n"
@@ -219,16 +226,48 @@ def build_pass2_messages(
         "}\n"
     )
 
+    # Build per-symbol trading constraints
+    min_reserve = portfolio.total_value * min_cash_pct / 100
+
+    constraints_lines = ["== TRADING CONSTRAINTS =="]
+
+    if buying_power <= 0:
+        constraints_lines.append(
+            f"⚠ NO BUY BUDGET — cash ${portfolio.cash:,.2f} is below "
+            f"${min_reserve:,.2f} min reserve. Only SELL or HOLD allowed."
+        )
+    else:
+        constraints_lines.append(f"Buying power: ${buying_power:,.2f}")
+
+    constraints_lines.append(f"Max position: {max_position_pct}% = ${max_position_usd:,.0f}")
+    constraints_lines.append("")
+    constraints_lines.append("Per-symbol room:")
+
+    for p in sorted(portfolio.positions, key=lambda x: x.market_value, reverse=True):
+        room = max(0, max_position_usd - p.market_value)
+        buy_room = min(room, buying_power)
+        status = "AT MAX" if room <= 0 else f"BUY up to ${buy_room:,.0f}"
+        constraints_lines.append(
+            f"  {p.symbol}: {p.weight_pct:.1f}% | {status} | SELL up to ${p.market_value:,.0f}"
+        )
+
+    # Watchlist symbols without positions
+    held = {p.symbol for p in portfolio.positions}
+    for sym in watchlist:
+        if sym not in held:
+            constraints_lines.append(
+                f"  {sym}: 0% | BUY up to ${min(max_position_usd, buying_power):,.0f}"
+            )
+
+    constraints_text = "\n".join(constraints_lines)
+
     today = datetime.now().strftime("%A %Y-%m-%d")
     user_prompt = (
         f"== TODAY: {today} ==\n\n"
         f"== MARKET ANALYSIS (from senior analyst) ==\n"
         f"{json.dumps(analysis_json, indent=2)}\n\n"
         f"{portfolio.to_prompt_text()}\n\n"
-        f"Available cash for new BUYs: ${portfolio.cash:,.2f}\n"
-        f"Minimum cash to maintain: ${portfolio.total_value * min_cash_pct / 100:,.2f}\n"
-        f"Maximum investable: ${max(0, portfolio.cash - portfolio.total_value * min_cash_pct / 100):,.2f}\n"
-        f"Max position size: ${max_position_usd:,.0f} ({max_position_pct}% of portfolio)\n\n"
+        f"{constraints_text}\n\n"
         f"Decide your trades and respond with the JSON decision."
     )
 

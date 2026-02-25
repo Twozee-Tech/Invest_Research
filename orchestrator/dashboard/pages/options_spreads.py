@@ -1,4 +1,4 @@
-"""Wheel Strategy dashboard: active positions, Greeks, P&L history."""
+"""Options Spreads dashboard: multi-leg spread positions, Greeks, P&L history."""
 
 from __future__ import annotations
 
@@ -14,29 +14,29 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from dashboard.config_utils import load_config
 
-st.title("Wheel Strategy")
+st.title("Options Spreads")
 
 config = load_config()
 accounts = config.get("accounts", {})
 
-# Find options accounts
-options_accounts = {
+# Find spread accounts
+spread_accounts = {
     key: acct
     for key, acct in accounts.items()
-    if acct.get("strategy") == "wheel"
+    if acct.get("strategy") == "vertical_spreads"
 }
 
-if not options_accounts:
-    st.warning("No wheel strategy accounts configured. Add an account with `strategy: wheel` in config.yaml.")
+if not spread_accounts:
+    st.warning("No options spread accounts configured. Add an account with `strategy: vertical_spreads` in config.yaml.")
     st.stop()
 
 # Account selector
 selected_key = st.selectbox(
     "Account",
-    list(options_accounts.keys()),
-    format_func=lambda k: options_accounts[k].get("name", k),
+    list(spread_accounts.keys()),
+    format_func=lambda k: spread_accounts[k].get("name", k),
 )
-acct = options_accounts[selected_key]
+acct = spread_accounts[selected_key]
 
 DB_PATH = Path("data/audit.db")
 
@@ -94,7 +94,17 @@ def _parse_greeks(raw) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
-# ── Portfolio Greeks Summary ──────────────────────────────────────────────────
+SPREAD_LABELS = {
+    "iron_condor": "Iron Condor",
+    "butterfly": "Butterfly",
+    "bull_call": "Bull Call Spread",
+    "bear_put": "Bear Put Spread",
+    "bull_put": "Bull Put Spread",
+    "bear_call": "Bear Call Spread",
+}
+
+
+# -- Portfolio Greeks Summary -------------------------------------------------
 
 active = _load_active(selected_key)
 
@@ -115,40 +125,37 @@ with c3:
 with c4:
     st.metric("Gamma", f"{total_gamma:+.4f}")
 with c5:
-    st.metric("Open Positions", len(active))
+    st.metric("Open Spreads", len(active))
 
 st.divider()
 
-# ── Active Positions ──────────────────────────────────────────────────────────
+# -- Active Positions ---------------------------------------------------------
 
 st.subheader("Active Positions")
 
 if not active:
-    st.info("No open positions. Run a wheel cycle to let the AI sell CSPs or CCs.")
+    st.info("No open spreads. Run a cycle to let the AI open spread positions.")
 else:
     for pos in active:
         g = _parse_greeks(pos.get("current_greeks"))
         entry_debit = pos.get("entry_debit", 0)
-        current_value = pos.get("current_value")
         current_pl = pos.get("current_pl")
         max_profit = pos.get("max_profit", 0)
         max_loss = pos.get("max_loss", 0)
         dte = pos.get("dte")
         contracts = pos.get("contracts", 1)
+        spread_type = pos.get("spread_type", "unknown")
+        spread_label = SPREAD_LABELS.get(spread_type, spread_type.replace("_", " ").title())
 
-        # P&L strings
         pl_str = f"${current_pl:+,.2f}" if current_pl is not None else "N/A"
-        if current_pl is not None and max_loss > 0:
-            profit_captured = current_pl / max_profit * 100 if max_profit > 0 else 0
+        if current_pl is not None and max_profit > 0:
+            profit_captured = current_pl / max_profit * 100
             pl_pct_str = f" ({profit_captured:+.0f}% of max profit)"
         else:
             pl_pct_str = ""
 
-        # Color based on DTE urgency
-        dte_color = "red" if (dte or 99) <= 7 else ("orange" if (dte or 99) <= 14 else "green")
-
         header = (
-            f"{pos.get('symbol')} {pos.get('spread_type')} "
+            f"{pos.get('symbol')} {spread_label} "
             f"{pos.get('buy_strike')}/{pos.get('sell_strike')} "
             f"| exp {pos.get('expiration_date')} "
             f"| DTE: {dte}"
@@ -175,12 +182,12 @@ else:
                 st.metric("Contracts", contracts)
 
             st.caption(
-                f"Buy: {pos.get('buy_strike')} {pos.get('buy_option_type').upper()} @ ${entry_debit:.2f} entry | "
-                f"Sell: {pos.get('sell_strike')} {pos.get('sell_option_type').upper()} | "
+                f"Type: **{spread_label}** | "
+                f"Buy: {pos.get('buy_strike')} {(pos.get('buy_option_type') or '').upper()} @ ${entry_debit:.2f} | "
+                f"Sell: {pos.get('sell_strike')} {(pos.get('sell_option_type') or '').upper()} | "
                 f"ID: {pos.get('id')}"
             )
 
-            # DTE progress bar
             max_dte = 60
             dte_val = dte or 0
             st.progress(
@@ -190,7 +197,7 @@ else:
 
 st.divider()
 
-# ── P&L History ───────────────────────────────────────────────────────────────
+# -- P&L History --------------------------------------------------------------
 
 st.subheader("Closed Positions — P&L History")
 
@@ -199,15 +206,15 @@ history = _load_history(selected_key)
 if not history:
     st.info("No closed positions yet.")
 else:
-    # Summary table
     rows = []
     for p in history:
+        spread_type = p.get("spread_type", "unknown")
         rows.append({
             "Symbol": p.get("symbol"),
-            "Type": p.get("spread_type"),
+            "Type": SPREAD_LABELS.get(spread_type, spread_type.replace("_", " ").title()),
             "Strikes": f"{p.get('buy_strike')}/{p.get('sell_strike')}",
-            "Entry": p.get("entry_date", "")[:10],
-            "Close": p.get("close_date", "")[:10],
+            "Entry": (p.get("entry_date") or "")[:10],
+            "Close": (p.get("close_date") or "")[:10],
             "Reason": p.get("close_reason", ""),
             "Entry $": f"${p.get('entry_debit', 0):.2f}",
             "Close $": f"${p.get('close_value', 0):.2f}" if p.get("close_value") else "N/A",
@@ -218,9 +225,8 @@ else:
     df = pd.DataFrame(rows)
     st.dataframe(df, use_container_width=True, hide_index=True)
 
-    # Cumulative P&L chart
     pl_values = [p.get("realized_pl") or 0 for p in reversed(history)]
-    dates = [p.get("close_date", "")[:10] for p in reversed(history)]
+    dates = [(p.get("close_date") or "")[:10] for p in reversed(history)]
     cumulative = []
     running = 0.0
     for v in pl_values:
@@ -240,7 +246,7 @@ else:
         ))
         fig.add_hline(y=0, line_dash="dash", line_color="gray")
         fig.update_layout(
-            title="Cumulative Realized P&L — Wheel Strategy",
+            title="Cumulative Realized P&L — Options Spreads",
             xaxis_title="Close Date",
             yaxis_title="Cumulative P&L ($)",
             height=350,
@@ -248,10 +254,9 @@ else:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    # Per-trade P&L bar chart
     if pl_values:
         colors = ["green" if v >= 0 else "red" for v in pl_values]
-        labels = [f"{p.get('symbol')} {p.get('spread_type')[:2]}" for p in reversed(history)]
+        labels = [f"{p.get('symbol')} {p.get('spread_type', '')[:4]}" for p in reversed(history)]
         fig2 = go.Figure(go.Bar(
             x=labels,
             y=pl_values,
@@ -271,7 +276,7 @@ else:
 
 st.divider()
 
-# ── Account Info ──────────────────────────────────────────────────────────────
+# -- Account Info -------------------------------------------------------------
 
 with st.expander("Account Configuration"):
     rp = acct.get("risk_profile", {})
@@ -281,11 +286,10 @@ with st.expander("Account Configuration"):
         st.caption(f"Schedule: `{acct.get('cron')}`")
         st.caption(f"Max Open Spreads: {rp.get('max_open_spreads', 5)}")
     with c2:
-        st.caption(f"Target DTE: {rp.get('min_new_position_dte', 21)}-60 days")
-        st.caption(f"Auto-close DTE: ≤{rp.get('auto_close_dte', 7)}")
-        st.caption(f"Take profit: {rp.get('take_profit_pct', 75)}% of max profit")
+        st.caption(f"Target DTE: {rp.get('target_dte_min', 21)}-{rp.get('target_dte_max', 45)} days")
+        st.caption(f"Max Spread Width: {rp.get('max_spread_width', 10)} strikes")
+        st.caption(f"Take profit: {rp.get('take_profit_pct', 50)}% of max profit")
     with c3:
-        st.caption(f"Stop loss: {rp.get('stop_loss_pct', 50)}% of max loss")
-        st.caption(f"Min cash reserve: {rp.get('min_cash_pct', 40)}%")
-        st.caption(f"Max delta: ±{rp.get('max_portfolio_delta_pct', 15)}% of account")
-    st.caption(f"Watchlist: {', '.join(acct.get('watchlist', []))}")
+        st.caption(f"Stop loss: {rp.get('stop_loss_pct', 100)}% of max loss")
+        st.caption(f"Min cash reserve: {rp.get('min_cash_pct', 20)}%")
+    st.caption(f"Watchlist: {', '.join(acct.get('watchlist', ['(uses research agent)']))}")

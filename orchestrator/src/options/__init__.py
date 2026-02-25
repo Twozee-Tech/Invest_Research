@@ -1,1 +1,1 @@
-"""Options trading package: vertical spreads (bull call / bear put)."""
+"""Options trading package: wheel strategy + multi-leg spreads."""

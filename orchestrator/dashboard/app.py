@@ -18,10 +18,11 @@ audit_logs = st.Page("pages/audit_logs.py", title="Audit Logs", icon="📋")
 account_mgmt = st.Page("pages/account_management.py", title="Account Management", icon="⚙️")
 settings = st.Page("pages/settings.py", title="Settings", icon="🔧")
 
-options_positions = st.Page("pages/options_positions.py", title="Options Spreads", icon="📈")
+options_positions = st.Page("pages/options_positions.py", title="Wheel Strategy", icon="🎡")
+options_spreads_page = st.Page("pages/options_spreads.py", title="Options Spreads", icon="📈")
 backtesting = st.Page("pages/backtesting.py", title="Backtesting", icon="🔄")
 research = st.Page("pages/research.py", title="Research Agent", icon="🔍")
 wiki = st.Page("pages/wiki.py", title="Wiki", icon="📖")
 
-pg = st.navigation([overview, account_detail, run_control, options_positions, backtesting, research, model_compare, audit_logs, account_mgmt, settings, wiki])
+pg = st.navigation([overview, account_detail, run_control, options_positions, options_spreads_page, backtesting, research, model_compare, audit_logs, account_mgmt, settings, wiki])
 pg.run()
