@@ -202,7 +202,7 @@ git -C "${APP_DIR}" remote set-url origin "https://github.com/${REPO}.git"
 # ---- python venv + dependencies ----
 python3 -m venv "${APP_DIR}/.venv"
 "${APP_DIR}/.venv/bin/pip" install --upgrade pip --quiet
-"${APP_DIR}/.venv/bin/pip" install -r "${APP_DIR}/requirements.txt" --quiet
+"${APP_DIR}/.venv/bin/pip" install -r "${APP_DIR}/orchestrator/requirements.txt" --quiet
 
 # ---- runtime directories + config ----
 mkdir -p "${APP_DIR}/data" "${APP_DIR}/logs"
