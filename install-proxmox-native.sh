@@ -185,80 +185,68 @@ sleep 6
 
 # ── 6. provision ─────────────────────────────────────────────────────────────
 echo ""
-echo -e "${YELLOW}[6/6] Provisioning (Python 3.12 + deps)...${NC}"
-info "This takes 3–5 minutes on first run (compiling packages)."
+echo -e "${YELLOW}[6/6] Provisioning (Python 3.11 + deps)...${NC}"
+info "This takes 3–5 minutes on first run (compiling packages on ARM)."
 
-# Build supervisor environment string in outer shell (heredoc expansion happens here)
+WORK_DIR="${APP_DIR}/orchestrator"
 ENV_INLINE="GHOSTFOLIO_URL=\"${GHOSTFOLIO_URL}\",GHOSTFOLIO_ACCESS_TOKEN=\"${GHOSTFOLIO_TOKEN}\",LLM_BASE_URL=\"${LLM_URL}\",INITIAL_BUDGET=\"${INITIAL_BUDGET}\",LOG_LEVEL=\"INFO\",TZ=\"Europe/Warsaw\""
 
+# ---- 6a: packages + clone + venv ----
 pct exec "$CTID" -- bash -euo pipefail << PROVISION
 export DEBIAN_FRONTEND=noninteractive
-
-# ---- system packages ----
 apt-get update -qq
 apt-get install -y --no-install-recommends \
     python3 python3-venv python3-dev \
     gcc g++ git curl ca-certificates supervisor
 
-# ---- clone repo ----
 git clone --depth=1 "https://${GITHUB_TOKEN}@github.com/${REPO}.git" "${APP_DIR}"
-# remove token from remote URL
 git -C "${APP_DIR}" remote set-url origin "https://github.com/${REPO}.git"
 
-# ---- python venv + dependencies ----
 python3 -m venv "${APP_DIR}/.venv"
 "${APP_DIR}/.venv/bin/pip" install --upgrade pip --quiet
-echo "Installing Python packages (scipy/numpy compile from source on ARM — may take 15+ min)..."
+echo "Installing Python packages (may take 15+ min on ARM)..."
 "${APP_DIR}/.venv/bin/pip" install -r "${APP_DIR}/orchestrator/requirements.txt"
 
-# ---- runtime directories + config ----
-mkdir -p "${APP_DIR}/data" "${APP_DIR}/logs"
-if [ ! -f "${APP_DIR}/data/config.yaml" ]; then
-    cp "${APP_DIR}/config.yaml" "${APP_DIR}/data/config.yaml"
-fi
+mkdir -p "${APP_DIR}/orchestrator/data" "${APP_DIR}/orchestrator/logs"
+cp "${APP_DIR}/config.yaml" "${APP_DIR}/orchestrator/data/config.yaml"
+PROVISION
 
-# ---- .env ----
-cat > "${APP_DIR}/.env" << 'EOF'
-GHOSTFOLIO_URL=${GHOSTFOLIO_URL}
-GHOSTFOLIO_ACCESS_TOKEN=${GHOSTFOLIO_TOKEN}
-LLM_BASE_URL=${LLM_URL}
-INITIAL_BUDGET=${INITIAL_BUDGET}
-LOG_LEVEL=INFO
-TZ=Europe/Warsaw
-EOF
-
-# ---- supervisor config ----
-cat > /etc/supervisor/conf.d/invest.conf << SUPCONF
+# ---- 6b: write supervisor config from outer shell (avoids nested heredoc issues) ----
+SUPERVISOR_CONF=$(cat << EOF
 [program:scheduler]
 command=${APP_DIR}/.venv/bin/python -m src.main
-directory=${APP_DIR}
+directory=${WORK_DIR}
 environment=${ENV_INLINE}
 autostart=true
 autorestart=true
-stdout_logfile=${APP_DIR}/logs/scheduler.log
-stderr_logfile=${APP_DIR}/logs/scheduler.log
+stdout_logfile=${WORK_DIR}/logs/scheduler.log
+stderr_logfile=${WORK_DIR}/logs/scheduler.log
 stdout_logfile_maxbytes=10MB
 stdout_logfile_backups=3
 
 [program:dashboard]
 command=${APP_DIR}/.venv/bin/streamlit run dashboard/app.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true
-directory=${APP_DIR}
+directory=${WORK_DIR}
 environment=${ENV_INLINE}
 autostart=true
 autorestart=true
-stdout_logfile=${APP_DIR}/logs/dashboard.log
-stderr_logfile=${APP_DIR}/logs/dashboard.log
+stdout_logfile=${WORK_DIR}/logs/dashboard.log
+stderr_logfile=${WORK_DIR}/logs/dashboard.log
 stdout_logfile_maxbytes=10MB
 stdout_logfile_backups=3
-SUPCONF
+EOF
+)
+echo "$SUPERVISOR_CONF" > /tmp/invest-supervisor.conf
+pct push "$CTID" /tmp/invest-supervisor.conf /etc/supervisor/conf.d/invest.conf
+rm -f /tmp/invest-supervisor.conf
 
-# ---- enable supervisor on boot ----
+# ---- 6c: enable and start supervisor ----
+pct exec "$CTID" -- bash -euo pipefail << 'FINALIZE'
 systemctl enable supervisor
 systemctl restart supervisor
-
-sleep 3
+sleep 5
 supervisorctl status
-PROVISION
+FINALIZE
 
 CT_IP=$(pct exec "$CTID" -- hostname -I 2>/dev/null | awk '{print $1}' || echo "<container-ip>")
 
