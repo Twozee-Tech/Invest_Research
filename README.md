@@ -1,8 +1,12 @@
 # AI Investment Orchestrator
 
-LLM-powered autonomous portfolio management. Eight virtual portfolios ($10k each) managed by local AI models via llama-swap, tracked in Ghostfolio. Two parallel model families (Qwen3-Next and Nemotron) run identical strategies for A/B comparison. Includes a backtesting engine that replays the full LLM decision pipeline on historical data.
+LLM-powered autonomous portfolio management. Thirteen virtual portfolios managed by local AI models via llama-swap, tracked in Ghostfolio. Two parallel model families (Qwen3-Next and Nemotron) run identical strategies for A/B comparison. Includes a vertical spreads options engine, intraday momentum cycles, a daily research agent, and a backtesting engine that replays the full LLM decision pipeline on historical data.
+
+Multi-arch Docker image (amd64 + arm64) — runs on standard x86 servers and ARM hardware (Raspberry Pi, Proxmox ARM nodes, etc.).
 
 ## Install
+
+### Standard (Linux/macOS — Docker required)
 
 One command installs everything. The interactive installer guides you through configuration.
 
@@ -10,16 +14,27 @@ One command installs everything. The interactive installer guides you through co
 curl -fsSL https://raw.githubusercontent.com/Twozee-Tech/Invest_Research/main/install.sh | bash
 ```
 
-[View install.sh source](https://github.com/Twozee-Tech/Invest_Research/blob/main/install.sh)
-
 **What it does:**
-- Checks Docker availability
 - Configures Ghostfolio and llama-swap connections (interactive prompts)
-- Downloads all project files
-- Builds the Docker image
+- Downloads all project files and builds the Docker image
 - Installs the `invest` CLI command to `~/.local/bin`
 
-No Python installation required on the host — everything runs in Docker.
+### Proxmox LXC (ARM64 or x86)
+
+Run on the **Proxmox host shell** — creates a Debian 12 LXC, installs Docker inside it, pulls the pre-built GHCR image, and starts the app:
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Twozee-Tech/Invest_Research/main/install-proxmox.sh)"
+```
+
+**What it does:**
+- Detects host architecture (arm64/amd64) and downloads the matching Debian 12 LXC template
+- Creates a privileged LXC with Docker nesting enabled
+- Installs Docker inside the container
+- Logs in to GHCR and pulls `ghcr.io/twozee-tech/invest-orchestrator:latest`
+- Configures and starts the orchestrator
+
+Requires a GitHub PAT with `read:packages` scope (prompted during install).
 
 ## Usage
 
@@ -54,49 +69,66 @@ Dashboard available at **http://localhost:8501** after `invest start`.
 | - Performance UI          |    |  - Risk manager (per account)       |
 | - Yahoo Finance data      |    |  - Trade executor                   |
 |                           |    |  - Audit logger (JSON + SQLite)     |
-+---------------------------+    |  - Options spreads engine           |
-                                 |  - Backtest runner                  |
-| llama-swap                |    |                                     |
-| (LLM inference)           |<---|  Streamlit Dashboard (:8501)        |
-| - Qwen3-Next (default)    |    |  - Account overview                 |
-| - Nemotron (balanced)     |    |  - Decision logs                    |
-| - Miro_Thinker (deep)     |    |  - Options positions                |
-+---------------------------+    |  - Backtesting (historical sim)     |
-                                 |  - Manual trigger / dry-run         |
-| yfinance / RSS feeds      |    |  - Account management               |
-| (market data + news)      |<---+                                     |
++---------------------------+    |  - Vertical spreads engine          |
+                                 |  - Intraday momentum engine         |
+| llama-swap                |    |  - Research agent                   |
+| (LLM inference)           |<---|  - Backtest runner                  |
+| - Qwen3-Next (default)    |    |                                     |
+| - Nemotron (balanced)     |    |  Streamlit Dashboard (:8501)        |
++---------------------------+    |  - Account overview                 |
+                                 |  - Decision logs                    |
+| yfinance / RSS feeds      |    |  - Options positions                |
+| (market data + news)      |<---+  - Backtesting (historical sim)     |
 +---------------------------+    +-------------------------------------+
 ```
 
 ## Accounts & Strategies
 
-Eight accounts run in two parallel model families for A/B comparison:
+Thirteen accounts across two parallel model families (Qwen3-Next / Nemotron) for A/B comparison:
 
-| Account | Model | Frequency | Strategy | Stop-Loss | Min Holding |
-|---------|-------|-----------|----------|-----------|-------------|
-| Weekly Balanced | Qwen3-Next | Sunday 20:00 | Core-Satellite (60% ETF + 30% stock + 10% cash) | -15% | 14 days |
-| Monthly Value | Qwen3-Next | 1st of month 20:00 | Value investing (40% ETF + 50% stock + 10% cash) | -20% | 30 days |
-| Daily Momentum | Qwen3-Next | Mon–Fri 18:00 | Momentum/Swing (20% ETF + 70% stock + 10% cash) | -8% | 1 day |
-| Options Spreads | Qwen3-Next | Mon/Wed/Fri 19:00 | Vertical spreads (bull/bear call/put, delta-neutral) | 50% of max loss | DTE-based |
-| Weekly Balanced (Nemotron) | Nemotron | Sunday 20:00 | Core-Satellite (60% ETF + 30% stock + 10% cash) | -15% | 14 days |
-| Monthly Value (Nemotron) | Nemotron | 1st of month 20:00 | Value investing (40% ETF + 50% stock + 10% cash) | -20% | 30 days |
-| Daily Momentum (Nemotron) | Nemotron | Mon–Fri 18:00 | Momentum/Swing (20% ETF + 70% stock + 10% cash) | -8% | 1 day |
-| Options Spreads (Nemotron) | Nemotron | Mon/Wed/Fri 19:00 | Vertical spreads (bull/bear call/put, delta-neutral) | 50% of max loss | DTE-based |
+| Account | Model | Frequency | Strategy |
+|---------|-------|-----------|----------|
+| Weekly Balanced | Qwen3-Next | Sunday 20:00 | Core-Satellite (60% ETF + 30% stock + 10% cash) |
+| Monthly Value | Qwen3-Next | 1st of month 20:00 | Value investing (40% ETF + 50% stock + 10% cash) |
+| Daily Momentum | Qwen3-Next | Mon–Fri 18:00 | Momentum/Swing (20% ETF + 70% stock + 10% cash) |
+| Wheel Strategy | Qwen3-Next | Thursday 18:20 | Sell CSP → Sell CC (Wheel), earnings-filtered |
+| Vertical Spreads | Qwen3-Next | Thursday 19:00 | Multi-leg spreads (bull/bear call/put, iron condor, butterfly) |
+| Intraday Momentum | Qwen3-Next | Mon–Fri 15:00–21:00 (30min) | Short-term momentum, intraday signals |
+| Weekly Balanced (Nemotron) | Nemotron | Sunday 20:20 | Core-Satellite |
+| Monthly Value (Nemotron) | Nemotron | 1st of month 20:40 | Value investing |
+| Daily Momentum (Nemotron) | Nemotron | Mon–Fri 18:20 | Momentum/Swing |
+| Wheel Strategy (Nemotron) | Nemotron | Thursday 18:40 | Wheel (CSP → CC) |
+| Vertical Spreads (Nemotron) | Nemotron | Thursday 19:20 | Multi-leg spreads |
+| Intraday Momentum (Nemotron) | Nemotron | Mon–Fri 15:15–21:15 (30min) | Short-term momentum |
+| Daily Research Agent | Qwen3-Next | Mon–Fri 14:00 | Builds dynamic watchlist for other accounts |
 
-Each account starts with $10,000. All tracked in Ghostfolio with separate account IDs. Nemotron accounts use Qwen3-Next as fallback model.
+Each account starts with $10,000. All tracked in Ghostfolio with separate account IDs.
 
 ## Decision Process
 
-Each equity cycle runs 6 phases:
+### Equity cycles (standard + intraday)
 
-1. **Context Gathering** — portfolio state from Ghostfolio, market data from yfinance (including VIX + 10Y yield), technical indicators (SMA20/50/200, RSI-14, MACD, Bollinger Bands), upcoming earnings calendar, news filtered by account watchlist, previous decision history with live P/L
-2. **LLM Pass 1 — Market Analysis** — regime classification (BULL/BEAR/SIDEWAYS/HIGH_VOLATILITY), sector analysis with numeric score (−2 to +2), portfolio health, opportunities and threats
-3. **LLM Pass 2 — Trade Decisions** — specific trades with `stop_loss_pct`, `take_profit_pct`, `time_stop_days` (structured percentage-based fields, no hallucinated price levels), position sizing verified against explicit dollar limits
-4. **Risk Validation** — hard rules enforced (position limits, cash reserves, liquidity, holding period, correlation warnings, bootstrap mode). Stop-loss triggers generate forced sells automatically
-5. **Trade Execution** — orders created in Ghostfolio via REST API; portfolio state estimated from executed results
-6. **Audit Logging** — full cycle saved as JSON + SQLite summary (pass 1/2 messages, responses, risk modifications, executed trades)
+1. **Context Gathering** — portfolio state from Ghostfolio, market data from yfinance (VIX, 10Y yield), technical indicators (SMA20/50/200, RSI-14, MACD, Bollinger Bands), earnings calendar, news filtered by watchlist, previous decision history with live P/L
+2. **LLM Pass 1 — Market Analysis** — regime classification (BULL/BEAR/SIDEWAYS/HIGH_VOLATILITY), sector scores (−2 to +2), portfolio health
+3. **LLM Pass 2 — Trade Decisions** — specific trades with `stop_loss_pct`, `take_profit_pct`, `time_stop_days`; position sizing verified against dollar limits
+4. **Risk Validation** — position limits, cash reserves, liquidity, holding period, correlation warnings, bootstrap mode; stop-loss triggers generate forced sells
+5. **Trade Execution** — Ghostfolio orders via REST API
+6. **Audit Logging** — full cycle saved as JSON + SQLite summary
 
-Options cycles additionally compute IV percentiles, portfolio Greeks (Δ/Θ/ν), and use a separate decision parser for open/close/roll actions.
+### Vertical spreads cycles
+
+Same 6-phase structure with a spreads-specific pipeline:
+- **Pass 1** — IV percentile, skew analysis, regime, best spread type recommendation
+- **Pass 2** — OPEN_SPREAD / CLOSE / SKIP actions with spread_type, contracts, reason
+- **Spreads selector** — Black-Scholes delta targeting for strike selection; supports iron_condor, bull_call, bear_put, bull_put, bear_call, butterfly
+- **Spreads risk manager** — max open spreads, cash reserve (40%), earnings blackout, auto-close on DTE ≤ 3, take-profit ≥ 50%, stop-loss ≥ 100% of max loss
+- **Position tracker** — SQLite with synthetic Ghostfolio tickers (`SPREAD-SYM-TYPE-DATE-strikes`)
+
+### Wheel strategy cycles
+
+- Runs CSP (Cash Secured Put) on selected stocks until assignment, then switches to CC (Covered Call)
+- Earnings blackout prevents opening positions within 7 days of earnings
+- Separate decision parser for SELL_CSP / SELL_CC / CLOSE / SKIP / ROLL actions
 
 ## Risk Rules
 
@@ -120,7 +152,6 @@ The dashboard includes a backtesting engine that replays the full 2-pass LLM pip
 - **Date anonymisation** — LLM receives "Week N" labels instead of calendar dates to reduce temporal bias
 - **Same pipeline** — identical prompt_builder, decision_parser, and risk_manager as live trading
 - **Metrics** — total return, max drawdown, win rate, benchmark comparison (SPY buy-and-hold)
-- **Configurable** — any account config, any date range, adjustable starting capital
 
 Run from the Backtesting page in the dashboard, or directly:
 
@@ -132,51 +163,59 @@ result = run_backtest(account_config, "2024-01-01", "2024-06-30", llm_client)
 ## Project Structure
 
 ```
-├── install.sh                     # One-line curl installer
-├── docker-compose.yml
+├── install.sh                        # One-line curl installer (builds from source)
+├── install-proxmox.sh                # Proxmox host installer (creates LXC, pulls GHCR image)
+├── docker-compose.yml                # Development (builds locally)
+├── docker-compose.prod.yml           # Production (pulls ghcr.io image)
+├── .github/workflows/
+│   └── docker-publish.yml            # Builds linux/amd64 + linux/arm64, pushes to GHCR
 ├── orchestrator/
 │   ├── Dockerfile
 │   ├── pyproject.toml
-│   ├── supervisord.conf           # Runs scheduler + dashboard in one container
+│   ├── supervisord.conf              # Runs scheduler + dashboard in one container
 │   ├── src/
-│   │   ├── main.py                # Entry point + APScheduler
-│   │   ├── prompt_builder.py      # Pass 1 & 2 message construction
-│   │   ├── decision_parser.py     # Pydantic models + LLM response normalisation
-│   │   ├── risk_manager.py        # Hard risk rules + bootstrap + correlation check
-│   │   ├── trade_executor.py      # Ghostfolio order creation
-│   │   ├── audit_logger.py        # JSON + SQLite audit trail
-│   │   ├── market_data.py         # yfinance quotes, history, earnings calendar
-│   │   ├── technical_indicators.py # SMA, RSI, MACD, Bollinger Bands
-│   │   ├── news_fetcher.py        # RSS feeds, watchlist-filtered relevance scoring
-│   │   ├── portfolio_state.py     # Ghostfolio → PortfolioState aggregation
-│   │   ├── ghostfolio_client.py   # Ghostfolio REST client (2-step auth)
-│   │   ├── llm_client.py          # OpenAI-compatible LLM client with fallback
-│   │   ├── account_manager.py     # Config + Ghostfolio account lifecycle
-│   │   ├── options/               # Options spreads subsystem
-│   │   │   ├── prompt_builder.py  # Options-specific Pass 1 & 2 prompts
-│   │   │   ├── decision_parser.py # open/close/roll decision models
-│   │   │   ├── executor.py        # Spread execution + position tracking
-│   │   │   ├── risk_manager.py    # Greeks-based risk rules
-│   │   │   ├── positions.py       # OptionsPosition tracker (SQLite)
-│   │   │   ├── greeks.py          # Black-Scholes Greeks calculation
-│   │   │   ├── selector.py        # Strike + expiry selection
-│   │   │   └── data.py            # IV percentile from option chains
-│   │   └── backtest/              # Historical simulation engine
-│   │       ├── runner.py          # Weekly tick loop + metrics
-│   │       ├── historical_data.py # Prefetch + no-lookahead slicing
-│   │       └── portfolio_sim.py   # In-memory SimulatedPortfolio
-│   ├── dashboard/                 # Streamlit (8 pages)
+│   │   ├── main.py                   # Entry point + APScheduler
+│   │   ├── prompt_builder.py         # Pass 1 & 2 message construction
+│   │   ├── decision_parser.py        # Pydantic models + LLM response normalisation
+│   │   ├── risk_manager.py           # Hard risk rules + bootstrap + correlation check
+│   │   ├── trade_executor.py         # Ghostfolio order creation
+│   │   ├── audit_logger.py           # JSON + SQLite audit trail
+│   │   ├── market_data.py            # yfinance quotes, history, earnings calendar
+│   │   ├── technical_indicators.py   # SMA, RSI, MACD, Bollinger Bands
+│   │   ├── news_fetcher.py           # RSS feeds, watchlist-filtered relevance scoring
+│   │   ├── portfolio_state.py        # Ghostfolio → PortfolioState aggregation
+│   │   ├── ghostfolio_client.py      # Ghostfolio REST client (2-step auth)
+│   │   ├── llm_client.py             # OpenAI-compatible LLM client with fallback
+│   │   ├── account_manager.py        # Config + Ghostfolio account lifecycle
+│   │   ├── research_agent.py         # Dynamic watchlist builder
+│   │   ├── options/                  # Options trading subsystem
+│   │   │   ├── greeks.py             # Black-Scholes Greeks calculation
+│   │   │   ├── data.py               # IV percentile from option chains
+│   │   │   ├── positions.py          # OptionsPosition tracker (SQLite)
+│   │   │   ├── selector.py           # Wheel: strike + expiry selection
+│   │   │   ├── prompt_builder.py     # Wheel: Pass 1 & 2 prompts
+│   │   │   ├── decision_parser.py    # Wheel: SELL_CSP/SELL_CC/CLOSE/ROLL models
+│   │   │   ├── executor.py           # Wheel: execution + position tracking
+│   │   │   ├── risk_manager.py       # Wheel: Greeks-based risk rules
+│   │   │   ├── spreads_selector.py   # Spreads: delta-targeted strike selection
+│   │   │   ├── spreads_prompt_builder.py  # Spreads: IV skew + spread type prompts
+│   │   │   ├── spreads_decision_parser.py # Spreads: OPEN_SPREAD/CLOSE/SKIP models
+│   │   │   ├── spreads_executor.py   # Spreads: multi-leg execution
+│   │   │   └── spreads_risk_manager.py    # Spreads: auto-close, cash rules
+│   │   └── backtest/                 # Historical simulation engine
+│   │       ├── runner.py             # Weekly tick loop + metrics
+│   │       ├── historical_data.py    # Prefetch + no-lookahead slicing
+│   │       └── portfolio_sim.py      # In-memory SimulatedPortfolio
+│   ├── dashboard/                    # Streamlit (multiple pages)
 │   │   ├── app.py
 │   │   └── pages/
 │   │       ├── overview.py
-│   │       ├── logs.py
-│   │       ├── accounts.py
-│   │       ├── manual_run.py
 │   │       ├── options_positions.py
-│   │       └── backtesting.py
-│   └── tests/                     # Unit + integration tests
-├── logs/                          # JSON audit logs (one per cycle)
-└── data/                          # SQLite summary + config + cache
+│   │       ├── options_spreads.py
+│   │       └── ...
+│   └── tests/                        # 118 unit tests
+├── logs/                             # JSON audit logs (one per cycle)
+└── data/                             # SQLite summary + config + cache
 ```
 
 ## Development
@@ -184,10 +223,10 @@ result = run_backtest(account_config, "2024-01-01", "2024-06-30", llm_client)
 ```bash
 cd orchestrator
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+pip install poetry && poetry install
 
 # Run tests
-python -m pytest tests/ -v
+.venv/bin/python -m pytest tests/ -v
 
 # Run single cycle locally (dry run)
 python -m src.main --once weekly_balanced --dry-run
@@ -199,14 +238,14 @@ python -m src.main --all --dry-run
 streamlit run dashboard/app.py
 ```
 
-## Reinstall / Update
+## Update
 
 ```bash
-# Re-download from GitHub and rebuild
-invest update
+# Pull new image (Proxmox / prod setup)
+docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d
 
-# Or re-run the full installer
-curl -fsSL https://raw.githubusercontent.com/Twozee-Tech/Invest_Research/main/install.sh | bash
+# Rebuild from source (standard install)
+invest update
 ```
 
 ## Uninstall
@@ -214,9 +253,8 @@ curl -fsSL https://raw.githubusercontent.com/Twozee-Tech/Invest_Research/main/in
 ```bash
 invest stop
 rm ~/.local/bin/invest
-docker rmi invest-orchestrator
+docker rmi invest-orchestrator ghcr.io/twozee-tech/invest-orchestrator
 docker volume rm invest_invest_data invest_invest_logs
-rm -rf ~/Projects/invest
 ```
 
 ## License
