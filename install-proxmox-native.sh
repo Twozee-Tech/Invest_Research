@@ -105,12 +105,12 @@ echo ""
 
 echo "  Available storage:"
 pvesm status --content rootdir 2>/dev/null \
-    | awk 'NR>1 && $3>0 {printf "    %-20s %s GiB free\n", $1, int($5/1024/1024)}' || true
+    | awk 'NR>1 {printf "    %-20s %s GiB free\n", $1, int($5/1024/1024)}' || true
 echo ""
 
 DEFAULT_STORAGE=$(pvesm status --content rootdir 2>/dev/null \
-    | awk 'NR>1 && $3>0 {print $1; exit}')
-DEFAULT_STORAGE=${DEFAULT_STORAGE:-local-lvm}
+    | awk 'NR>1 {print $1; exit}')
+DEFAULT_STORAGE=${DEFAULT_STORAGE:-local}
 
 CTID=$(pvesh get /cluster/nextid 2>/dev/null || echo "200")
 CTID=$(ask "  Container ID [${CTID}]: " "$CTID")
