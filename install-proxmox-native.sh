@@ -208,7 +208,8 @@ git -C "${APP_DIR}" remote set-url origin "https://github.com/${REPO}.git"
 # ---- python venv + dependencies ----
 python3 -m venv "${APP_DIR}/.venv"
 "${APP_DIR}/.venv/bin/pip" install --upgrade pip --quiet
-"${APP_DIR}/.venv/bin/pip" install -r "${APP_DIR}/orchestrator/requirements.txt" --quiet
+echo "Installing Python packages (scipy/numpy compile from source on ARM — may take 15+ min)..."
+"${APP_DIR}/.venv/bin/pip" install -r "${APP_DIR}/orchestrator/requirements.txt"
 
 # ---- runtime directories + config ----
 mkdir -p "${APP_DIR}/data" "${APP_DIR}/logs"
