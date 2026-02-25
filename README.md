@@ -19,22 +19,32 @@ curl -fsSL https://raw.githubusercontent.com/Twozee-Tech/Invest_Research/main/in
 - Downloads all project files and builds the Docker image
 - Installs the `invest` CLI command to `~/.local/bin`
 
-### Proxmox LXC (ARM64 or x86)
+### Proxmox LXC — Native Python (recommended, lighter)
 
-Run on the **Proxmox host shell** — creates a Debian 12 LXC, installs Docker inside it, pulls the pre-built GHCR image, and starts the app:
+Run on the **Proxmox host shell** — creates a Debian 12 LXC and runs Python + Supervisor directly. No Docker.
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Twozee-Tech/Invest_Research/main/install-proxmox-native.sh)"
+```
+
+**Resource usage:** ~250 MB RAM idle, ~1.2 GB disk, 1 core
+**What it does:**
+- Creates an unprivileged Debian 12 LXC (arm64 or amd64)
+- Installs Python 3.12 + Supervisor directly (no Docker)
+- Clones the repo, creates a venv, installs all dependencies
+- Configures Supervisor to manage the scheduler + dashboard processes
+
+Requires a GitHub PAT with `repo` (read) scope (prompted during install).
+
+### Proxmox LXC — Docker variant
+
+Same LXC setup but runs a pre-built Docker image instead of raw Python. Heavier (~420 MB RAM), but no compilation step.
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Twozee-Tech/Invest_Research/main/install-proxmox.sh)"
 ```
 
-**What it does:**
-- Detects host architecture (arm64/amd64) and downloads the matching Debian 12 LXC template
-- Creates a privileged LXC with Docker nesting enabled
-- Installs Docker inside the container
-- Logs in to GHCR and pulls `ghcr.io/twozee-tech/invest-orchestrator:latest`
-- Configures and starts the orchestrator
-
-Requires a GitHub PAT with `read:packages` scope (prompted during install).
+Requires a GitHub PAT with `read:packages` scope.
 
 ## Usage
 
@@ -164,7 +174,8 @@ result = run_backtest(account_config, "2024-01-01", "2024-06-30", llm_client)
 
 ```
 ├── install.sh                        # One-line curl installer (builds from source)
-├── install-proxmox.sh                # Proxmox host installer (creates LXC, pulls GHCR image)
+├── install-proxmox-native.sh         # Proxmox host installer — native Python in LXC (recommended)
+├── install-proxmox.sh                # Proxmox host installer — Docker in LXC variant
 ├── docker-compose.yml                # Development (builds locally)
 ├── docker-compose.prod.yml           # Production (pulls ghcr.io image)
 ├── .github/workflows/
