@@ -191,7 +191,7 @@ export DEBIAN_FRONTEND=noninteractive
 # ---- system packages ----
 apt-get update -qq
 apt-get install -y --no-install-recommends \
-    python3.12 python3.12-venv python3.12-dev \
+    python3 python3-venv python3-dev \
     gcc g++ git curl ca-certificates supervisor
 
 # ---- clone repo ----
@@ -200,12 +200,9 @@ git clone --depth=1 "https://${GITHUB_TOKEN}@github.com/${REPO}.git" "${APP_DIR}
 git -C "${APP_DIR}" remote set-url origin "https://github.com/${REPO}.git"
 
 # ---- python venv + dependencies ----
-python3.12 -m venv "${APP_DIR}/.venv"
+python3 -m venv "${APP_DIR}/.venv"
 "${APP_DIR}/.venv/bin/pip" install --upgrade pip --quiet
-"${APP_DIR}/.venv/bin/pip" install poetry --quiet
-cd "${APP_DIR}"
-"${APP_DIR}/.venv/bin/poetry" config virtualenvs.create false
-"${APP_DIR}/.venv/bin/poetry" install --only main --no-root --no-interaction --no-ansi -q
+"${APP_DIR}/.venv/bin/pip" install -r "${APP_DIR}/requirements.txt" --quiet
 
 # ---- runtime directories + config ----
 mkdir -p "${APP_DIR}/data" "${APP_DIR}/logs"
