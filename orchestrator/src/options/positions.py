@@ -208,7 +208,12 @@ class OptionsPositionTracker:
 
             entry_debit = row["entry_debit"]
             contracts = row["contracts"]
-            realized_pl = round((close_value - entry_debit) * contracts * 100, 2)
+            # entry_debit < 0 → credit trade (CSP, credit spread): P/L = premium_received - close_cost
+            # entry_debit > 0 → debit trade (debit spread):        P/L = close_value - debit_paid
+            if entry_debit < 0:
+                realized_pl = round((-entry_debit - close_value) * contracts * 100, 2)
+            else:
+                realized_pl = round((close_value - entry_debit) * contracts * 100, 2)
 
             conn.execute(
                 """UPDATE options_positions
@@ -311,12 +316,14 @@ class OptionsPositionTracker:
             return None
 
     def get_total_realized_pl(self, account_key: str) -> float:
-        """Sum of all realized P&L for closed/expired positions."""
+        """Sum of all realized P&L for closed/expired positions with real (non-dry-run) closes."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 row = conn.execute(
                     """SELECT COALESCE(SUM(realized_pl), 0) FROM options_positions
-                    WHERE account_key=? AND status IN ('closed', 'expired')""",
+                    WHERE account_key=? AND status IN ('closed', 'expired')
+                    AND ghostfolio_close_order_id IS NOT NULL
+                    AND ghostfolio_close_order_id != 'DRY_RUN'""",
                     (account_key,),
                 ).fetchone()
             return float(row[0]) if row else 0.0

@@ -32,6 +32,7 @@ class StockQuote:
     sector: str
     industry: str
     name: str
+    short_pct_float: float | None = None  # short interest as % of float
 
 
 @dataclass
@@ -81,6 +82,7 @@ class MarketDataProvider:
             sector=info.get("sector", "Unknown"),
             industry=info.get("industry", "Unknown"),
             name=info.get("shortName", symbol),
+            short_pct_float=info.get("shortPercentOfFloat"),
         )
 
         self._quote_cache[symbol] = _CacheEntry(data=quote, timestamp=time.time())
@@ -168,12 +170,18 @@ class MarketDataProvider:
             return False
 
     def get_market_overview(self) -> dict:
-        """Get broad market indicators (S&P 500, VIX, 10Y yield)."""
+        """Get broad market indicators (S&P 500, VIX, 10Y yield, sector ETFs)."""
         benchmarks = {
             "SPY": "S&P 500 ETF",
             "QQQ": "Nasdaq 100 ETF",
             "^VIX": "VIX Volatility",
             "^TNX": "10Y Treasury Yield",
+            "XLK": "Tech",
+            "XLF": "Financials",
+            "XLE": "Energy",
+            "XLV": "Healthcare",
+            "XLI": "Industrials",
+            "XLY": "Consumer Discr.",
         }
         overview = {}
         for sym, label in benchmarks.items():

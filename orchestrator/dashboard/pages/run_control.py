@@ -38,7 +38,7 @@ for key, acct in accounts.items():
         if st.button(f"Run Now", key=f"run_{key}"):
             with st.spinner(f"Running cycle for {name}..."):
                 result = subprocess.run(
-                    ["python", "-m", "src.main", "--once", key],
+                    [sys.executable, "-m", "src.main", "--once", key],
                     capture_output=True,
                     text=True,
                     cwd=str(Path(__file__).resolve().parents[2]),
@@ -53,7 +53,7 @@ for key, acct in accounts.items():
         if st.button(f"Dry Run", key=f"dry_{key}"):
             with st.spinner(f"Dry run for {name}..."):
                 result = subprocess.run(
-                    ["python", "-m", "src.main", "--once", key, "--dry-run"],
+                    [sys.executable, "-m", "src.main", "--once", key, "--dry-run"],
                     capture_output=True,
                     text=True,
                     cwd=str(Path(__file__).resolve().parents[2]),
@@ -73,7 +73,7 @@ with col1:
     if st.button("Run All Now"):
         with st.spinner("Running all accounts..."):
             result = subprocess.run(
-                ["python", "-m", "src.main", "--all"],
+                [sys.executable, "-m", "src.main", "--all"],
                 capture_output=True,
                 text=True,
                 cwd=str(Path(__file__).resolve().parents[2]),
@@ -88,7 +88,7 @@ with col2:
     if st.button("Dry Run All"):
         with st.spinner("Dry running all accounts..."):
             result = subprocess.run(
-                ["python", "-m", "src.main", "--all", "--dry-run"],
+                [sys.executable, "-m", "src.main", "--all", "--dry-run"],
                 capture_output=True,
                 text=True,
                 cwd=str(Path(__file__).resolve().parents[2]),

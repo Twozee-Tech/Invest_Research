@@ -68,12 +68,21 @@ def build_pass1_messages(
             label = data.get("label", "")
             label_str = f" [{label}]" if label else ""
             extras = []
-            pe = data.get("pe")
-            div = data.get("div_yield")
+            short_pct = data.get("short_pct")
+            try:
+                pe = float(data.get("pe") or 0) or None
+            except (TypeError, ValueError):
+                pe = None
+            try:
+                div = float(data.get("div_yield") or 0) or None
+            except (TypeError, ValueError):
+                div = None
             if pe:
                 extras.append(f"P/E:{pe:.1f}")
             if div:
                 extras.append(f"Yield:{div*100:.1f}%")
+            if short_pct and short_pct > 0.05:  # only show if >5% (meaningful)
+                extras.append(f"Short:{short_pct*100:.1f}%")
             extras_str = f" | {', '.join(extras)}" if extras else ""
             market_lines.append(f"{symbol}{label_str}: ${price}{chg_str}{extras_str}")
     market_text = "\n".join(market_lines)

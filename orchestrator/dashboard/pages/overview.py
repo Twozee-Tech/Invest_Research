@@ -94,16 +94,17 @@ def next_run_time(cron: str) -> str:
         return ""
 
 
-st.title("AI Investment Orchestrator")
-
 config = load_config()
 accounts = config.get("accounts", {})
 
 if not accounts:
+    st.title("AI Investment Orchestrator")
     st.warning("No accounts configured. Go to Account Management to create one.")
     st.stop()
 
-# Fetch live account values from Ghostfolio (valueInBaseCurrency = securities + balance)
+# Fetch live account values from Ghostfolio
+# NOTE: valueInBaseCurrency = securities market value only (does NOT include cash balance)
+# Total portfolio value = valueInBaseCurrency + balance
 _live_values: dict[str, dict] = {}
 try:
     from src.ghostfolio_client import GhostfolioClient
@@ -114,9 +115,11 @@ try:
     for _a in _acct_list:
         _aid = _a.get("id", "")
         if _aid:
+            _securities = float(_a.get("valueInBaseCurrency", 0) or 0)
+            _cash = float(_a.get("balance", 0) or 0)
             _live_values[_aid] = {
-                "total": float(_a.get("valueInBaseCurrency", 0) or 0),
-                "cash": float(_a.get("balance", 0) or 0),
+                "total": _securities + _cash,
+                "cash": _cash,
             }
 except Exception:
     pass  # Ghostfolio unavailable — fall back to audit log values
@@ -124,8 +127,57 @@ except Exception:
 # Account cards — grouped by strategy
 trading_accounts = {k: v for k, v in accounts.items() if v.get("cycle_type") != "research"}
 
-audit = AuditLogger()
+# Options strategies use audit DB for P/L (Ghostfolio can't price synthetic option assets)
+_OPTIONS_STRATEGIES = {"wheel", "vertical_spreads"}
+
+def _options_pl(account_key: str) -> float:
+    """Read cumulative realized P/L from the options positions DB (authoritative source)."""
+    try:
+        from src.options.positions import OptionsPositionTracker
+        tracker = OptionsPositionTracker()
+        return tracker.get_total_realized_pl(account_key)
+    except Exception:
+        return 0.0
+
+_options_pl_cache: dict[str, float] = {
+    k: _options_pl(k)
+    for k, v in trading_accounts.items()
+    if v.get("strategy") in _OPTIONS_STRATEGIES
+}
+
+# Calculate total portfolio value across all trading accounts
 initial_budget = config.get("defaults", {}).get("initial_budget", 10000)
+_total_value = 0.0
+_total_accounts = 0
+for _key, _acct in trading_accounts.items():
+    _acct_budget = float(_acct.get("initial_budget", initial_budget))
+    if _acct.get("strategy") in _OPTIONS_STRATEGIES:
+        _total_value += _acct_budget + _options_pl_cache.get(_key, 0.0)
+        _total_accounts += 1
+    else:
+        _aid = _acct.get("ghostfolio_account_id", "")
+        _live = _live_values.get(_aid, {})
+        if _live.get("total"):
+            _total_value += _live["total"]
+            _total_accounts += 1
+
+# Title row with total balance
+_title_col, _metric_col = st.columns([3, 1])
+with _title_col:
+    st.title("AI Investment Orchestrator")
+with _metric_col:
+    if _total_accounts > 0:
+        _total_budget = initial_budget * _total_accounts
+        _total_pl_pct = (_total_value - _total_budget) / _total_budget * 100 if _total_budget else None
+        st.metric(
+            "Total Portfolio",
+            f"${_total_value:,.2f}",
+            delta=f"{_total_pl_pct:+.2f}%" if _total_pl_pct is not None else None,
+        )
+    else:
+        st.metric("Total Portfolio", "—")
+
+audit = AuditLogger()
 
 # Group accounts by strategy
 _STRATEGY_LABELS = {
@@ -179,9 +231,16 @@ for strategy_key in _GROUP_ORDER:
 
             acct_id = acct.get("ghostfolio_account_id", "")
             live = _live_values.get(acct_id, {})
-            if live.get("total"):
+            strategy = acct.get("strategy", "")
+            acct_budget = float(acct.get("initial_budget", initial_budget))
+            if strategy in _OPTIONS_STRATEGIES:
+                # Use cumulative realized P/L from audit logs; Ghostfolio can't track options P/L
+                realized_pl = _options_pl_cache.get(key, 0.0)
+                value = acct_budget + realized_pl
+                pl_pct = (realized_pl / acct_budget * 100) if acct_budget else None
+            elif live.get("total"):
                 value = live["total"]
-                pl_pct = (value - initial_budget) / initial_budget * 100 if initial_budget else None
+                pl_pct = (value - acct_budget) / acct_budget * 100 if acct_budget else None
             else:
                 value = latest.get("portfolio_value")
                 pl_pct = latest.get("portfolio_pl_pct")

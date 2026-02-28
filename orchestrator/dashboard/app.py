@@ -11,6 +11,7 @@ st.set_page_config(
 
 # Main page redirects to Overview
 overview = st.Page("pages/overview.py", title="Overview", icon="📊", default=True)
+ghostfolio = st.Page("pages/ghostfolio.py", title="Ghostfolio", icon="💹")
 account_detail = st.Page("pages/account_detail.py", title="Account Detail", icon="💼")
 run_control = st.Page("pages/run_control.py", title="Run Control", icon="▶️")
 model_compare = st.Page("pages/model_compare.py", title="Model Comparison", icon="🔬")
@@ -24,5 +25,5 @@ backtesting = st.Page("pages/backtesting.py", title="Backtesting", icon="🔄")
 research = st.Page("pages/research.py", title="Research Agent", icon="🔍")
 wiki = st.Page("pages/wiki.py", title="Wiki", icon="📖")
 
-pg = st.navigation([overview, account_detail, run_control, options_positions, options_spreads_page, backtesting, research, model_compare, audit_logs, account_mgmt, settings, wiki])
+pg = st.navigation([overview, ghostfolio, account_detail, run_control, options_positions, options_spreads_page, backtesting, research, model_compare, audit_logs, account_mgmt, settings, wiki])
 pg.run()

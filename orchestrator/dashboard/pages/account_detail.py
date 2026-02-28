@@ -92,11 +92,18 @@ if logs:
                         st.write("**Executed Trades:**")
                         for t in trades:
                             status = "OK" if t.get("success") else "FAILED"
-                            st.write(
-                                f"  {t.get('type')} {t.get('symbol')} "
-                                f"qty={t.get('quantity', 0):.4f} @ ${t.get('price', 0):.2f} "
-                                f"= ${t.get('total', 0):,.2f} [{status}]"
-                            )
+                            err = f" — {t['error']}" if t.get("error") else ""
+                            # Options trades (wheel/spreads) have spread_type; equity trades have quantity
+                            if t.get("spread_type"):
+                                pl = t.get("realized_pl")
+                                pl_str = f" P/L=${pl:+.2f}" if pl is not None else ""
+                                line = (f"  {t.get('type')} {t.get('symbol')} "
+                                        f"[{t.get('spread_type','')}]{pl_str} [{status}]{err}")
+                            else:
+                                line = (f"  {t.get('type')} {t.get('symbol')} "
+                                        f"qty={t.get('quantity', 0):.4f} @ ${t.get('price', 0):.2f} "
+                                        f"= ${t.get('total', 0):,.2f} [{status}]{err}")
+                            st.write(line)
 
                     risk_mods = detail.get("risk_manager", {})
                     if risk_mods.get("modifications"):

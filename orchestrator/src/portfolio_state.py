@@ -246,9 +246,9 @@ def get_portfolio_state(
             sector_totals[sector] = sector_totals.get(sector, 0) + market_value
 
         # ── 4. Totals ──────────────────────────────────────────────────────────
-        # Prefer Ghostfolio's own total (more accurate than our sum when prices
-        # are stale or market is closed).
-        total_value = api_total if api_total > 0 else (total_market + cash)
+        # api_total (valueInBaseCurrency) = market value of holdings only, NOT cash.
+        # Add cash explicitly to get true portfolio total.
+        total_value = (api_total + cash) if api_total > 0 else (total_market + cash)
 
         # Compute weights
         for p in positions:
@@ -287,3 +287,41 @@ def get_portfolio_state(
     except Exception as e:
         logger.error("portfolio_state_build_failed", account_id=account_id, error=str(e))
         return _empty
+
+
+def compute_cash_from_orders(
+    ghostfolio: GhostfolioClient,
+    account_id: str,
+    initial_budget: float,
+) -> float | None:
+    """Compute correct cash balance from all Ghostfolio orders for an account.
+
+    Self-healing: derives cash from the full order history, not any cached state.
+    Formula: cash = initial_budget - Σ(buy_qty × price + fee) + Σ(sell_qty × price - fee)
+
+    Returns None on error so the caller can fall back to a delta-based estimate.
+    """
+    try:
+        orders = ghostfolio.list_orders()
+        if isinstance(orders, dict):
+            orders = orders.get("activities", [])
+
+        cash = float(initial_budget)
+        for o in orders:
+            if o.get("accountId") != account_id:
+                continue
+            qty   = float(o.get("quantity",  0) or 0)
+            price = float(o.get("unitPrice", 0) or 0)
+            fee   = float(o.get("fee",       0) or 0)
+            otype = o.get("type", "")
+            if otype == "BUY":
+                cash -= qty * price + fee
+            elif otype == "SELL":
+                cash += qty * price - fee
+
+        result = max(0.0, cash)
+        logger.info("cash_computed_from_orders", account_id=account_id, cash=round(result, 2))
+        return result
+    except Exception as e:
+        logger.warning("cash_from_orders_failed", account_id=account_id, error=str(e))
+        return None

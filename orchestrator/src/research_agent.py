@@ -65,7 +65,7 @@ Respond with valid JSON only, no markdown:
       "market_impact": "Bullish natgas, XOM, CVX; bearish EUR/USD"
     }
   ],
-  "macro_events_today": "CPI at 14:30 ET, Powell speech 16:00 ET",
+  "macro_events_today": "Use ONLY events from the provided economic calendar. Empty string if none.",
   "avoid_today": ["any sectors or symbols to avoid and why"]
 }"""
 
@@ -95,15 +95,18 @@ class ResearchAgent:
         news_text = self._gather_news(max_news, max_article_chars)
         screener_text = self._gather_screeners(max_screener)
         market_text = self._gather_market_overview()
+        calendar_text = self._gather_economic_calendar()
 
         from datetime import datetime
         today = datetime.now().strftime("%A %Y-%m-%d %H:%M CET")
         user_content = "\n\n".join([
             f"== TODAY: {today} ==",
+            calendar_text,
             market_text,
             screener_text,
             news_text,
-            "Analyze all the above and respond with the research brief JSON.",
+            "Analyze all the above and respond with the research brief JSON."
+            " Use ONLY the economic calendar events provided above for macro_events_today.",
         ])
 
         messages = [
@@ -198,6 +201,53 @@ class ResearchAgent:
         except Exception as e:
             logger.warning("market_overview_failed", error=str(e))
             return "== MARKET OVERVIEW ==\n(unavailable)"
+
+    def _gather_economic_calendar(self) -> str:
+        """Fetch today's USD economic events from ForexFactory public XML feed."""
+        import requests
+        import xml.etree.ElementTree as ET
+        from datetime import datetime
+
+        try:
+            resp = requests.get(
+                "https://nfs.faireconomy.media/ff_calendar_thisweek.xml",
+                timeout=10,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            resp.raise_for_status()
+            root = ET.fromstring(resp.content)
+
+            today_str = datetime.now().strftime("%m-%d-%Y")
+            events = []
+            for ev in root.findall("event"):
+                country = ev.findtext("country", "")
+                impact = ev.findtext("impact", "")
+                date_str = ev.findtext("date", "")
+                time_str = ev.findtext("time", "")
+                title = ev.findtext("title", "")
+                forecast = ev.findtext("forecast", "")
+                previous = ev.findtext("previous", "")
+
+                if country != "USD":
+                    continue
+                if impact not in ("High", "Medium"):
+                    continue
+                if today_str not in date_str:
+                    continue
+
+                parts = [f"{time_str} ET: {title} [{impact}]"]
+                if forecast:
+                    parts.append(f"forecast={forecast}")
+                if previous:
+                    parts.append(f"prev={previous}")
+                events.append(" | ".join(parts))
+
+            if events:
+                return "== ECONOMIC CALENDAR TODAY (USD, High/Medium impact) ==\n" + "\n".join(events)
+            return "== ECONOMIC CALENDAR TODAY ==\nNo major USD events scheduled."
+        except Exception as e:
+            logger.warning("economic_calendar_failed", error=str(e))
+            return "== ECONOMIC CALENDAR TODAY ==\n(unavailable)"
 
     @staticmethod
     def _save(data: dict) -> None:

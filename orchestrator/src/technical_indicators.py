@@ -26,6 +26,7 @@ class TechnicalSignals:
     bb_middle: float | None = None
     bb_lower: float | None = None
     volume_ratio: float | None = None  # current volume / 20-day avg
+    atr_14: float | None = None        # Average True Range 14-day
     price: float | None = None
 
     def to_summary(self) -> dict:
@@ -48,6 +49,9 @@ class TechnicalSignals:
             signals["BB_lower"] = round(self.bb_lower or 0, 2)
         if self.volume_ratio is not None:
             signals["volume_ratio"] = round(self.volume_ratio, 2)
+        if self.atr_14 is not None and self.price:
+            signals["ATR14"] = round(self.atr_14, 2)
+            signals["ATR14_pct"] = round(self.atr_14 / self.price * 100, 2)
         if self.price is not None:
             signals["price"] = round(self.price, 2)
 
@@ -130,6 +134,13 @@ def compute_indicators(df: pd.DataFrame, symbol: str) -> TechnicalSignals:
         signals.bb_upper = float(bb_high.iloc[-1])
         signals.bb_middle = float(bb_mid.iloc[-1])
         signals.bb_lower = float(bb_low.iloc[-1])
+
+    # ATR-14
+    if len(df) >= 14:
+        atr = ta.volatility.AverageTrueRange(high, low, close, window=14)
+        atr_val = atr.average_true_range()
+        if not atr_val.empty and pd.notna(atr_val.iloc[-1]):
+            signals.atr_14 = float(atr_val.iloc[-1])
 
     # Volume ratio
     if len(volume) >= 20:

@@ -137,23 +137,25 @@ def _filter_chain(df: pd.DataFrame, underlying_price: float) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-def get_iv_percentile(symbol: str, lookback_days: int = 252) -> float | None:
-    """Estimate IV percentile using historical close-to-close volatility.
+def get_iv_percentile(symbol: str, lookback_days: int = 252) -> dict | None:
+    """Estimate IV percentile and IV rank using historical realized volatility.
 
-    Returns a value 0-100: 100 = IV at historical maximum.
-    Uses realized vol as proxy for implied vol if no options data available.
+    Returns dict with:
+      percentile: % of 2y days where HV was lower than current (0-100)
+      rank:       (current - 52w_min) / (52w_max - 52w_min) * 100
+      current_hv: annualized 21-day realized vol (e.g. 0.35 = 35%)
+      hv_52w_high: 52-week maximum HV
+      hv_52w_low:  52-week minimum HV
+    Uses realized vol as proxy for implied vol.
     """
     try:
+        import numpy as np
         ticker = yf.Ticker(symbol)
         hist = ticker.history(period="2y", interval="1d")
         if hist.empty or len(hist) < 30:
             return None
 
         closes = hist["Close"].dropna()
-        log_returns = (closes / closes.shift(1)).apply(lambda x: x.__class__(x) if x > 0 else None).dropna()
-
-        # Rolling 21-day realized vol (annualized)
-        import numpy as np
         log_rets = np.log(closes / closes.shift(1)).dropna()
         rolling_vol = log_rets.rolling(21).std() * (252 ** 0.5)
         rolling_vol = rolling_vol.dropna()
@@ -161,9 +163,22 @@ def get_iv_percentile(symbol: str, lookback_days: int = 252) -> float | None:
         if len(rolling_vol) < 10:
             return None
 
-        current_vol = rolling_vol.iloc[-1]
+        current_vol = float(rolling_vol.iloc[-1])
+        # IV Percentile (2-year lookback)
         percentile = float((rolling_vol <= current_vol).mean() * 100)
-        return round(percentile, 1)
+        # IV Rank (52-week high/low)
+        vol_52w = rolling_vol.tail(252)
+        hv_high = float(vol_52w.max())
+        hv_low = float(vol_52w.min())
+        rank = ((current_vol - hv_low) / (hv_high - hv_low) * 100) if hv_high > hv_low else 50.0
+
+        return {
+            "percentile": round(percentile, 1),
+            "rank": round(rank, 1),
+            "current_hv": round(current_vol, 3),
+            "hv_52w_high": round(hv_high, 3),
+            "hv_52w_low": round(hv_low, 3),
+        }
 
     except Exception as e:
         logger.error("iv_percentile_failed", symbol=symbol, error=str(e))

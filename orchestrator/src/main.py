@@ -24,7 +24,7 @@ from .ghostfolio_client import GhostfolioClient
 from .llm_client import LLMClient
 from .market_data import MarketDataProvider
 from .news_fetcher import NewsFetcher
-from .portfolio_state import get_portfolio_state
+from .portfolio_state import get_portfolio_state, compute_cash_from_orders
 from .prompt_builder import build_pass1_messages, build_pass2_messages, format_decision_history
 from .fundamental_data import format_fundamentals_for_prompt, get_fundamentals_batch
 from .risk_manager import RiskManager, RiskManagerResult, filter_by_cost_breakeven
@@ -47,7 +47,7 @@ from .options.spreads_risk_manager import SpreadsRiskManager, SpreadsRiskResult
 
 structlog.configure(
     processors=[
-        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.TimeStamper(fmt="iso", utc=False),
         structlog.processors.add_log_level,
         structlog.dev.ConsoleRenderer(),
     ],
@@ -184,6 +184,7 @@ class Orchestrator:
                     "52w_high": q.week52_high,
                     "52w_low": q.week52_low,
                     "sector": q.sector,
+                    "short_pct": q.short_pct_float,
                 }
 
             # Add VIX for Pass 0 context
@@ -423,7 +424,13 @@ class Orchestrator:
                         logger.error("intraday_trade_failed",
                                      symbol=r.action.symbol, error=r.error)
 
-                new_cash = max(0, portfolio.cash + cash_delta)
+                # Compute canonical cash from full order history (self-healing, no cache dependency)
+                initial_budget = acct.get("initial_budget",
+                    self.config.get("defaults", {}).get("initial_budget", 10000))
+                new_cash = compute_cash_from_orders(self.ghostfolio, account_id, initial_budget)
+                if new_cash is None:
+                    new_cash = max(0, portfolio.cash + cash_delta)
+
                 portfolio_after = {
                     "total_value": portfolio.total_value,
                     "cash": new_cash,
@@ -433,8 +440,8 @@ class Orchestrator:
                     "fees_paid": round(fees_paid, 4),
                 }
 
-                # Sync cash balance back to Ghostfolio so total_value is correct
-                if cash_delta != 0 and account_id:
+                # Sync canonical cash balance back to Ghostfolio
+                if account_id:
                     try:
                         self.ghostfolio.update_account(account_id, balance=new_cash)
                         logger.info("account_balance_updated", account=account_name, new_cash=round(new_cash, 2))
@@ -566,6 +573,7 @@ class Orchestrator:
                     "52w_high": q.week52_high,
                     "52w_low": q.week52_low,
                     "sector": q.sector,
+                    "short_pct": q.short_pct_float,
                 }
 
             # Technical indicators
@@ -782,7 +790,13 @@ class Orchestrator:
                         new_symbols.add(t["symbol"])
                     elif t["type"] == "SELL":
                         cash_delta += t.get("total", 0) - fee
-            new_cash = max(0, portfolio.cash + cash_delta)
+            # Compute canonical cash from full order history (self-healing, no cache dependency)
+            initial_budget = acct.get("initial_budget",
+                self.config.get("defaults", {}).get("initial_budget", 10000))
+            new_cash = compute_cash_from_orders(self.ghostfolio, account_id, initial_budget)
+            if new_cash is None:
+                new_cash = max(0, portfolio.cash + cash_delta)
+
             portfolio_after = {
                 "total_value": portfolio.total_value,  # approx — prices unchanged short-term
                 "cash": new_cash,
@@ -791,8 +805,8 @@ class Orchestrator:
                 "cash_deployed": -cash_delta,
             }
 
-            # Sync cash balance back to Ghostfolio so total_value is correct
-            if cash_delta != 0 and account_id:
+            # Sync canonical cash balance back to Ghostfolio
+            if account_id:
                 try:
                     self.ghostfolio.update_account(account_id, balance=new_cash)
                     logger.info("account_balance_updated", account=account_name, new_cash=round(new_cash, 2))
@@ -927,7 +941,7 @@ class Orchestrator:
                     logger.warning("spreads_indicators_failed", symbol=sym, error=str(e))
 
             # IV percentiles
-            iv_data: dict[str, float | None] = {}
+            iv_data: dict[str, dict | None] = {}
             for sym in watchlist[:8]:
                 try:
                     iv_data[sym] = get_iv_percentile(sym)
@@ -1185,7 +1199,7 @@ class Orchestrator:
                     logger.warning("options_indicators_failed", symbol=sym, error=str(e))
 
             # IV percentiles for watchlist
-            iv_data: dict[str, float | None] = {}
+            iv_data: dict[str, dict | None] = {}
             for sym in watchlist[:8]:   # limit to avoid rate-limiting
                 try:
                     iv_data[sym] = get_iv_percentile(sym)

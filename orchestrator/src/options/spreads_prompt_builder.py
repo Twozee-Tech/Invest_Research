@@ -294,7 +294,16 @@ def _format_market_with_iv(
         w52h = data.get("52w_high", 0)
         w52l = data.get("52w_low", 0)
         iv_pct = iv_data.get(sym)
-        iv_str = f"IV-pct:{iv_pct:.0f}%" if iv_pct is not None else "IV:N/A"
+        if isinstance(iv_pct, dict):
+            iv_str = (f"IV-pct:{iv_pct['percentile']:.0f}%"
+                      f" IV-rank:{iv_pct['rank']:.0f}%"
+                      f" HV:{iv_pct['current_hv']*100:.0f}%"
+                      f"(52wH:{iv_pct['hv_52w_high']*100:.0f}%"
+                      f"/L:{iv_pct['hv_52w_low']*100:.0f}%)")
+        elif iv_pct is not None:
+            iv_str = f"IV-pct:{iv_pct:.0f}%"
+        else:
+            iv_str = "IV:N/A"
 
         dist_low = ""
         if w52l and price:
