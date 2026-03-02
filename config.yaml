@@ -296,7 +296,7 @@ accounts:
       max_open_spreads: 5
       min_cash_pct: 20
       take_profit_pct: 50
-      stop_loss_pct: 100
+      stop_loss_pct: 50      # close when loss >= 50% of max_loss (was 100% = too late)
       max_spread_width: 10
       target_dte_min: 21
       target_dte_max: 45
@@ -319,7 +319,7 @@ accounts:
       max_open_spreads: 5
       min_cash_pct: 20
       take_profit_pct: 50
-      stop_loss_pct: 100
+      stop_loss_pct: 50      # close when loss >= 50% of max_loss (was 100% = too late)
       max_spread_width: 10
       target_dte_min: 21
       target_dte_max: 45

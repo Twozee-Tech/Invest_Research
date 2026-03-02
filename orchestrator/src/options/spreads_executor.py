@@ -307,28 +307,55 @@ class SpreadsExecutor:
                     position_id=pos.id, success=True,
                 )
 
-            # Get current value of the sell leg as proxy for spread value
-            current_value = get_current_option_price(
-                pos.symbol,
-                pos.sell_option_type,
-                pos.sell_strike,
-                pos.expiration_date,
-            )
-            if current_value is None:
-                return SpreadsTradeResult(
-                    action="UPDATE", symbol=pos.symbol,
-                    spread_type=pos.spread_type,
-                    position_id=pos.id, success=False,
-                    error="Could not fetch current option price",
+            # For two-legged spreads, compute net spread value = buy_leg - sell_leg.
+            # For single-leg positions (CSP/CC stored here), buy_strike == 0 so we
+            # fall back to sell-leg-only pricing.
+            entry_debit = pos.entry_debit or 0
+            has_two_legs = (pos.buy_strike or 0) > 0
+
+            if has_two_legs:
+                buy_price = get_current_option_price(
+                    pos.symbol,
+                    pos.buy_option_type,
+                    pos.buy_strike,
+                    pos.expiration_date,
                 )
+                sell_price = get_current_option_price(
+                    pos.symbol,
+                    pos.sell_option_type,
+                    pos.sell_strike,
+                    pos.expiration_date,
+                )
+                if buy_price is None or sell_price is None:
+                    return SpreadsTradeResult(
+                        action="UPDATE", symbol=pos.symbol,
+                        spread_type=pos.spread_type,
+                        position_id=pos.id, success=False,
+                        error="Could not fetch option leg prices",
+                    )
+                current_value = round(buy_price - sell_price, 2)
+            else:
+                # Single-leg (CSP/CC): sell leg only
+                current_value = get_current_option_price(
+                    pos.symbol,
+                    pos.sell_option_type,
+                    pos.sell_strike,
+                    pos.expiration_date,
+                )
+                if current_value is None:
+                    return SpreadsTradeResult(
+                        action="UPDATE", symbol=pos.symbol,
+                        spread_type=pos.spread_type,
+                        position_id=pos.id, success=False,
+                        error="Could not fetch current option price",
+                    )
 
             # P&L depends on whether it's a debit or credit spread
-            entry_debit = pos.entry_debit or 0
             if entry_debit > 0:
                 # Debit spread: P&L = (current_value - entry_debit) * contracts * 100
                 current_pl = round((current_value - entry_debit) * pos.contracts * 100, 2)
             else:
-                # Credit spread: P&L = (|entry_credit| - current_value) * contracts * 100
+                # Credit spread / CSP: P&L = (|entry_credit| - current_value) * contracts * 100
                 entry_credit = abs(entry_debit)
                 current_pl = round((entry_credit - current_value) * pos.contracts * 100, 2)
 
