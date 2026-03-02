@@ -117,6 +117,7 @@ accounts:
       take_profit_pct: 50
       stop_loss_pct: 200     # 200% of premium = stop loss for shorts
       earnings_blackout_days: 5
+      min_premium_yield_pct: 5.0  # min monthly yield = premium / (strike*100) * (30/dte) * 100
     watchlist:
       - SPY
 
@@ -219,6 +220,7 @@ accounts:
       take_profit_pct: 50
       stop_loss_pct: 200
       earnings_blackout_days: 5
+      min_premium_yield_pct: 5.0  # min monthly yield = premium / (strike*100) * (30/dte) * 100
     watchlist:
       - SPY
 

@@ -147,9 +147,13 @@ else:
         # Color based on DTE urgency
         dte_color = "red" if (dte or 99) <= 7 else ("orange" if (dte or 99) <= 14 else "green")
 
+        buy_strike = pos.get("buy_strike") or 0.0
+        sell_strike = pos.get("sell_strike") or 0.0
+        is_naked = buy_strike == 0.0  # CSP / CC: single-leg, no buy side
+        strikes_str = str(sell_strike) if is_naked else f"{buy_strike}/{sell_strike}"
         header = (
             f"{pos.get('symbol')} {pos.get('spread_type')} "
-            f"{pos.get('buy_strike')}/{pos.get('sell_strike')} "
+            f"{strikes_str} "
             f"| exp {pos.get('expiration_date')} "
             f"| DTE: {dte}"
         )
@@ -174,11 +178,18 @@ else:
                 st.metric("Vega/1%IV", f"${g.get('net_vega', 0):+.2f}")
                 st.metric("Contracts", contracts)
 
-            st.caption(
-                f"Buy: {pos.get('buy_strike')} {pos.get('buy_option_type').upper()} @ ${entry_debit:.2f} entry | "
-                f"Sell: {pos.get('sell_strike')} {pos.get('sell_option_type').upper()} | "
-                f"ID: {pos.get('id')}"
-            )
+            sell_type = (pos.get("sell_option_type") or "").upper()
+            credit = -entry_debit  # entry_debit < 0 for CSP/credit trades
+            if is_naked:
+                leg_str = f"Sell: {sell_strike} {sell_type} @ ${credit:.2f} credit"
+            else:
+                buy_type = (pos.get("buy_option_type") or "").upper()
+                leg_str = (
+                    f"Buy: {buy_strike} {buy_type} | "
+                    f"Sell: {sell_strike} {sell_type} | "
+                    f"Net: ${entry_debit:.2f}"
+                )
+            st.caption(f"{leg_str} | ID: {pos.get('id')}")
 
             # DTE progress bar
             max_dte = 60

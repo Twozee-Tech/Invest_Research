@@ -132,10 +132,15 @@ def get_portfolio_state(
         )
 
         cash = float(account_info.get("balance", 0) or 0) if account_info else 0.0
-        # valueInBaseCurrency from the account list = securities market value + balance
-        # (Ghostfolio computes this correctly even when /portfolio/holdings can't be
-        # filtered per account)
-        api_total = float(account_info.get("valueInBaseCurrency", 0) or 0) if account_info else 0.0
+        # valueInBaseCurrency = securities market value only (NOT cash).
+        # Exception: for accounts with no real positions Ghostfolio echoes the cash
+        # balance here, which would double-count if we then added cash again.
+        # Detect this by checking if api_total ≈ cash (within 0.5%).
+        api_total_raw = float(account_info.get("valueInBaseCurrency", 0) or 0) if account_info else 0.0
+        if cash > 0 and abs(api_total_raw - cash) / cash < 0.005:
+            api_total = 0.0  # no real securities; total_value = cash only
+        else:
+            api_total = api_total_raw
 
         # ── 2. Build price map from holdings list ──────────────────────────────
         # /api/v1/portfolio/holdings returns a list (not a dict) in recent Ghostfolio
@@ -246,9 +251,15 @@ def get_portfolio_state(
             sector_totals[sector] = sector_totals.get(sector, 0) + market_value
 
         # ── 4. Totals ──────────────────────────────────────────────────────────
-        # api_total (valueInBaseCurrency) = market value of holdings only, NOT cash.
-        # Add cash explicitly to get true portfolio total.
-        total_value = (api_total + cash) if api_total > 0 else (total_market + cash)
+        # Prefer self-computed total_market (per-account orders × current prices) over
+        # api_total (valueInBaseCurrency) which Ghostfolio reports as the whole-portfolio
+        # total, not per-account — causing inflated values for accounts that hold only
+        # a fraction of the overall portfolio.
+        # Fall back to api_total only if we have no order data at all.
+        if acct_orders:
+            total_value = total_market + cash
+        else:
+            total_value = cash  # cash-only, api_total unreliable
 
         # Compute weights
         for p in positions:

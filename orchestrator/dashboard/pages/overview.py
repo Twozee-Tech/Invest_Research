@@ -102,25 +102,85 @@ if not accounts:
     st.warning("No accounts configured. Go to Account Management to create one.")
     st.stop()
 
-# Fetch live account values from Ghostfolio
-# NOTE: valueInBaseCurrency = securities market value only (does NOT include cash balance)
-# Total portfolio value = valueInBaseCurrency + balance
+# Fetch live account values from Ghostfolio.
+# Ghostfolio's valueInBaseCurrency in the accounts list is NOT filtered per-account —
+# it appears to report the total portfolio value across all accounts, making per-account
+# P/L wrong. Instead we compute securities value ourselves:
+#   securities = Σ (per-account orders filtered by accountId) × current market prices
+# This requires one fetch each of list_accounts, list_orders, get_portfolio_holdings.
 _live_values: dict[str, dict] = {}
 try:
     from src.ghostfolio_client import GhostfolioClient
     _gf = GhostfolioClient()
+
+    # ── 1. Account cash balances ───────────────────────────────────────────────
     _acct_list = _gf.list_accounts()
     if isinstance(_acct_list, dict):
         _acct_list = _acct_list.get("accounts", [])
-    for _a in _acct_list:
-        _aid = _a.get("id", "")
-        if _aid:
-            _securities = float(_a.get("valueInBaseCurrency", 0) or 0)
-            _cash = float(_a.get("balance", 0) or 0)
-            _live_values[_aid] = {
-                "total": _securities + _cash,
-                "cash": _cash,
-            }
+    _cash_by_id: dict[str, float] = {
+        _a["id"]: float(_a.get("balance", 0) or 0)
+        for _a in _acct_list if isinstance(_a, dict) and _a.get("id")
+    }
+
+    # ── 2. Current market prices from holdings ────────────────────────────────
+    _holdings_raw = _gf.get_portfolio_holdings()
+    if isinstance(_holdings_raw, dict):
+        _holdings_raw = _holdings_raw.get("holdings", _holdings_raw)
+    _price_map: dict[str, float] = {}
+    _h_iter = _holdings_raw if isinstance(_holdings_raw, list) else (
+        _holdings_raw.values() if isinstance(_holdings_raw, dict) else []
+    )
+    for _h in _h_iter:
+        if not isinstance(_h, dict):
+            continue
+        _sp = _h.get("SymbolProfile") or {}
+        _sym = _sp.get("symbol") or _h.get("symbol", "")
+        if _sym and len(_sym) <= 10:
+            _price_map[_sym] = float(_h.get("marketPrice", 0) or 0)
+
+    # ── 3. Per-account order quantities ──────────────────────────────────────
+    _all_orders = _gf.list_orders()
+    if isinstance(_all_orders, dict):
+        _all_orders = _all_orders.get("activities", [])
+
+    # Group orders by accountId
+    _orders_by_acct: dict[str, list] = {}
+    for _o in _all_orders:
+        _oid = _o.get("accountId", "")
+        if _oid:
+            _orders_by_acct.setdefault(_oid, []).append(_o)
+
+    # ── 4. Compute per-account market value ──────────────────────────────────
+    for _aid, _cash in _cash_by_id.items():
+        _acct_orders = _orders_by_acct.get(_aid, [])
+
+        # Aggregate net qty per symbol (BUY adds, SELL reduces)
+        _agg: dict[str, dict] = {}
+        for _o in _acct_orders:
+            _sp = _o.get("SymbolProfile") or {}
+            _sym = _sp.get("symbol") or _o.get("symbol", "")
+            if not _sym:
+                continue
+            _qty = float(_o.get("quantity", 0) or 0)
+            _price = float(_o.get("unitPrice", 0) or 0)
+            _otype = (_o.get("type") or "").upper()
+            if _sym not in _agg:
+                _agg[_sym] = {"qty": 0.0, "avg_cost": 0.0}
+            if _otype == "BUY":
+                _total_cost = _agg[_sym]["avg_cost"] * _agg[_sym]["qty"] + _qty * _price
+                _agg[_sym]["qty"] += _qty
+                _agg[_sym]["avg_cost"] = _total_cost / _agg[_sym]["qty"] if _agg[_sym]["qty"] else 0
+            elif _otype == "SELL":
+                _agg[_sym]["qty"] = max(0.0, _agg[_sym]["qty"] - _qty)
+
+        _securities = sum(
+            _data["qty"] * (_price_map.get(_sym) or _data["avg_cost"])
+            for _sym, _data in _agg.items()
+            if _data["qty"] > 0.0001
+        )
+
+        _live_values[_aid] = {"total": _securities + _cash, "cash": _cash}
+
 except Exception:
     pass  # Ghostfolio unavailable — fall back to audit log values
 

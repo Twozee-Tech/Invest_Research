@@ -65,21 +65,29 @@ def select_csp(
     target_delta: float = 0.30,
     dte_min: int = 21,
     dte_max: int = 45,
+    min_premium_yield_pct: float = 5.0,
 ) -> SelectedCSP | None:
     """Select an OTM put strike for a cash-secured put.
 
     Picks the expiration closest to the middle of [dte_min, dte_max] then
     finds the put with delta closest to -target_delta (OTM side).
 
+    Premium yield filter: monthly_yield = (premium / strike) × (30 / dte) × 100
+    must be ≥ min_premium_yield_pct.  If the target-delta strike fails, the
+    selector tries to find the highest-yielding OTM strike (delta ≤ 0.50) that
+    does satisfy the minimum.  Returns None if no qualifying strike exists.
+
     Args:
-        symbol:       Underlying ticker.
-        contracts:    Number of contracts (informational only; no effect on selection).
-        target_delta: Absolute delta target (~0.25-0.35 for a typical CSP).
-        dte_min:      Minimum DTE for expiration search.
-        dte_max:      Maximum DTE for expiration search.
+        symbol:                Underlying ticker.
+        contracts:             Number of contracts (informational only).
+        target_delta:          Absolute delta target (~0.25-0.35 for a typical CSP).
+        dte_min:               Minimum DTE for expiration search.
+        dte_max:               Maximum DTE for expiration search.
+        min_premium_yield_pct: Minimum monthly premium yield as % of collateral.
+                               e.g. 5.0 means ≥5% per 30-day period.
 
     Returns:
-        SelectedCSP or None if no suitable chain found.
+        SelectedCSP or None if no suitable chain / no qualifying strike found.
     """
     chain = get_option_chain(symbol, min_dte=dte_min, max_dte=dte_max)
     if chain is None:
@@ -94,50 +102,97 @@ def select_csp(
     today = date.today()
     exp_date = datetime.strptime(chain.expiration, "%Y-%m-%d").date()
     t = max((exp_date - today).days / 365.0, 0.001)
+    dte = chain.dte
     S = chain.underlying_price
 
-    # Only consider OTM puts (strike < underlying price)
+    # Only consider OTM puts (strike < underlying price) with delta ≤ 0.50
     otm_puts = puts[puts["strike"] < S].copy()
     if otm_puts.empty:
         logger.warning("csp_selector_no_otm_puts", symbol=symbol, underlying=S)
         return None
 
-    # Find put whose delta (negative) is closest to -target_delta
+    def _monthly_yield(row) -> float:
+        p = _mid_price(row)
+        k = float(row["strike"])
+        if k <= 0:
+            return 0.0
+        return (p / k) * (30 / max(dte, 1)) * 100
+
+    # ── 1. Try target-delta strike first ──────────────────────────────────────
     best_row = _find_target_delta_row(otm_puts, "put", S, t, -abs(target_delta))
     if best_row is None:
-        # Fallback: pick the strike closest to (S * (1 - 0.05)) — ~5% OTM
         approx_strike = S * (1 - 0.05)
-        otm_puts["dist"] = (otm_puts["strike"] - approx_strike).abs()
-        best_row = otm_puts.loc[otm_puts["dist"].idxmin()]
+        otm_puts["_dist"] = (otm_puts["strike"] - approx_strike).abs()
+        best_row = otm_puts.loc[otm_puts["_dist"].idxmin()]
 
-    strike = float(best_row["strike"])
-    premium = _mid_price(best_row)
+    selected_row = best_row
+    my = _monthly_yield(best_row)
+
+    # ── 2. If yield is too low, search for best-yielding qualifying strike ────
+    if my < min_premium_yield_pct:
+        logger.info(
+            "csp_target_delta_yield_too_low",
+            symbol=symbol, strike=float(best_row["strike"]),
+            monthly_yield_pct=round(my, 2), min_required=min_premium_yield_pct,
+        )
+        # Among all OTM puts with delta ≤ 0.50, find the one with highest yield
+        # that meets the minimum — preferring strikes closest to target delta.
+        candidates = []
+        for _, row in otm_puts.iterrows():
+            row_yield = _monthly_yield(row)
+            if row_yield >= min_premium_yield_pct:
+                iv_r = float(row.get("impliedVolatility", 0) or 0)
+                strike_r = float(row["strike"])
+                g = calculate_greeks("put", S, strike_r, t, iv_r, RISK_FREE_RATE) if iv_r > 0 else None
+                delta_r = abs(g.delta) if g else 0.0
+                if delta_r <= 0.50:  # hard cap: never sell ATM or ITM puts
+                    candidates.append((row, row_yield, abs(delta_r - target_delta)))
+
+        if not candidates:
+            logger.warning(
+                "csp_no_qualifying_yield",
+                symbol=symbol, min_premium_yield_pct=min_premium_yield_pct,
+                dte=dte, underlying=round(S, 2),
+            )
+            return None
+
+        # Pick candidate closest to target delta among those with qualifying yield
+        candidates.sort(key=lambda x: x[2])
+        selected_row, my, _ = candidates[0]
+        logger.info(
+            "csp_yield_adjusted_strike",
+            symbol=symbol, strike=float(selected_row["strike"]),
+            monthly_yield_pct=round(my, 2),
+        )
+
+    strike = float(selected_row["strike"])
+    premium = _mid_price(selected_row)
 
     if premium <= 0:
         logger.warning("csp_selector_zero_premium", symbol=symbol, strike=strike)
         return None
 
-    iv = float(best_row.get("impliedVolatility", 0.25) or 0.25)
+    iv = float(selected_row.get("impliedVolatility", 0.25) or 0.25)
     greeks = calculate_greeks("put", S, strike, t, iv, RISK_FREE_RATE)
     delta = greeks.delta if greeks else -target_delta
 
     logger.info(
         "csp_selected",
         symbol=symbol, strike=strike, expiration=chain.expiration,
-        dte=chain.dte, premium=premium, delta=round(delta, 3),
-        contracts=contracts,
+        dte=dte, premium=premium, delta=round(delta, 3),
+        monthly_yield_pct=round(my, 2), contracts=contracts,
     )
 
     return SelectedCSP(
         symbol=symbol,
         expiration=chain.expiration,
-        dte=chain.dte,
+        dte=dte,
         underlying_price=S,
         strike=strike,
         premium=premium,
         iv=iv,
         delta=delta,
-        contract_symbol=str(best_row.get("contractSymbol", "") or ""),
+        contract_symbol=str(selected_row.get("contractSymbol", "") or ""),
     )
 
 

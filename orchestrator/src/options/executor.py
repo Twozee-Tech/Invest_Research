@@ -151,6 +151,7 @@ class OptionsExecutor:
             target_delta = self.risk_profile.get("csp_target_delta", 0.30)
             dte_min = self.risk_profile.get("csp_dte_min", 21)
             dte_max = self.risk_profile.get("csp_dte_max", 45)
+            min_yield = self.risk_profile.get("min_premium_yield_pct", 5.0)
 
             csp = select_csp(
                 symbol=action.symbol,
@@ -158,6 +159,7 @@ class OptionsExecutor:
                 target_delta=target_delta,
                 dte_min=dte_min,
                 dte_max=dte_max,
+                min_premium_yield_pct=min_yield,
             )
             if csp is None:
                 return OptionsTradeResult(
