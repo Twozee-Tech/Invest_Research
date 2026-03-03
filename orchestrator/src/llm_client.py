@@ -87,7 +87,7 @@ class LLMClient:
         model: str = "Qwen3-Next",
         fallback_model: str | None = "Nemotron",
         temperature: float = 0.7,
-        max_tokens: int = 4096,
+        max_tokens: int = 16384,
     ) -> dict:
         """Send chat request and parse JSON from response.
 
@@ -119,6 +119,9 @@ class LLMClient:
 
         Always returns a dict; raises ValueError if no JSON object is found.
         """
+        # Strip <think>...</think> blocks (some models output chain-of-thought here)
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
         # Try every code block in order (models sometimes have multiple blocks)
         for match in re.finditer(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL):
             try:
