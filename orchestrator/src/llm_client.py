@@ -12,7 +12,7 @@ from openai import OpenAI
 
 logger = structlog.get_logger()
 
-DEFAULT_TIMEOUT = 300  # LLM can be slow, especially thinking models
+DEFAULT_TIMEOUT = 900  # thinking models can generate 8k+ tokens (~10 min at 15 tok/s)
 MAX_RETRIES = 2
 
 
