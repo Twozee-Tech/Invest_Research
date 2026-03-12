@@ -1414,6 +1414,9 @@ def main():
     if args.once:
         logger.info("running_single_cycle", account=args.once)
         acct_cfg = orch.config.get("accounts", {}).get(args.once, {})
+        if acct_cfg.get("enabled") is False:
+            logger.info("account_disabled", account=args.once)
+            return
         cycle_type = acct_cfg.get("cycle_type", "standard")
         if cycle_type == "research":
             orch.run_research_cycle()
@@ -1430,6 +1433,9 @@ def main():
     if args.all:
         logger.info("running_all_accounts")
         for key, acct_cfg in orch.config.get("accounts", {}).items():
+            if acct_cfg.get("enabled") is False:
+                logger.info("account_disabled_skipped", account=key)
+                continue
             cycle_type = acct_cfg.get("cycle_type", "standard")
             if cycle_type == "research":
                 orch.run_research_cycle()
@@ -1447,6 +1453,9 @@ def main():
     scheduler = BlockingScheduler()
 
     for key, acct in orch.config.get("accounts", {}).items():
+        if acct.get("enabled") is False:
+            logger.info("account_disabled_skipped", account=key)
+            continue
         cron_str = acct.get("cron", "0 20 * * 0")
         cycle_type = acct.get("cycle_type", "standard")
         try:
