@@ -2,7 +2,7 @@
 # AI Investment Orchestrator — Proxmox LXC Native Installer (no Docker)
 #
 # Run on the Proxmox HOST shell:
-#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/Twozee-Tech/Invest_Research/main/install-proxmox-native.sh)"
+#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/Lukas-tek-no-logic/Invest_Research/main/install-proxmox-native.sh)"
 #
 # Creates a Debian 12 LXC, installs Python 3.12 + Supervisor directly.
 # No Docker — lighter footprint (~250 MB RAM idle vs ~420 MB with Docker).
@@ -35,7 +35,7 @@ ask_secret() {
 }
 
 APP_DIR="/opt/invest-orchestrator"
-REPO="Twozee-Tech/Invest_Research"
+REPO="Lukas-tek-no-logic/Invest_Research"
 
 # ── banner ────────────────────────────────────────────────────────────────────
 echo -e "${BLUE}${BOLD}"

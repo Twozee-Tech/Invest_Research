@@ -2,7 +2,7 @@
 # AI Investment Orchestrator — Proxmox LXC Installer
 #
 # Run on the Proxmox HOST shell:
-#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/Twozee-Tech/Invest_Research/main/install-proxmox.sh)"
+#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/Lukas-tek-no-logic/Invest_Research/main/install-proxmox.sh)"
 #
 # What this does:
 #   1. Creates a Debian 12 LXC container (auto-detects arm64 / amd64)
@@ -42,7 +42,7 @@ ask_secret() {    # ask_secret <prompt>
 
 # ── constants ─────────────────────────────────────────────────────────────────
 IMAGE="ghcr.io/twozee-tech/invest-orchestrator:latest"
-COMPOSE_URL="https://raw.githubusercontent.com/Twozee-Tech/Invest_Research/main/docker-compose.prod.yml"
+COMPOSE_URL="https://raw.githubusercontent.com/Lukas-tek-no-logic/Invest_Research/main/docker-compose.prod.yml"
 APP_DIR="/opt/invest-orchestrator"
 
 # ── banner ────────────────────────────────────────────────────────────────────
@@ -152,7 +152,7 @@ echo -e "  ${BOLD}GitHub PAT${NC} — needed to pull the private GHCR image."
 echo "  Create at: GitHub → Settings → Developer settings → Personal access tokens"
 echo "  Required scope: read:packages"
 echo ""
-GITHUB_USER=$(ask "  GitHub username [Twozee-Tech]: " "Twozee-Tech")
+GITHUB_USER=$(ask "  GitHub username [Lukas-tek-no-logic]: " "Lukas-tek-no-logic")
 GITHUB_TOKEN=$(ask_secret "  GitHub PAT (read:packages): ")
 if [[ -z "$GITHUB_TOKEN" ]]; then
     err "GitHub token is required to pull the private image."

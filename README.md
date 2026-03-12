@@ -11,7 +11,7 @@ Multi-arch Docker image (amd64 + arm64) — runs on standard x86 servers and ARM
 One command installs everything. The interactive installer guides you through configuration.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Twozee-Tech/Invest_Research/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Lukas-tek-no-logic/Invest_Research/main/install.sh | bash
 ```
 
 **What it does:**
@@ -24,7 +24,7 @@ curl -fsSL https://raw.githubusercontent.com/Twozee-Tech/Invest_Research/main/in
 Run on the **Proxmox host shell** — creates a Debian 12 LXC and runs Python + Supervisor directly. No Docker.
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/Twozee-Tech/Invest_Research/main/install-proxmox-native.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Lukas-tek-no-logic/Invest_Research/main/install-proxmox-native.sh)"
 ```
 
 **Resource usage:** ~250 MB RAM idle, ~1.2 GB disk, 1 core
@@ -41,7 +41,7 @@ Requires a GitHub PAT with `repo` (read) scope (prompted during install).
 Same LXC setup but runs a pre-built Docker image instead of raw Python. Heavier (~420 MB RAM), but no compilation step.
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/Twozee-Tech/Invest_Research/main/install-proxmox.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Lukas-tek-no-logic/Invest_Research/main/install-proxmox.sh)"
 ```
 
 Requires a GitHub PAT with `read:packages` scope.

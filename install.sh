@@ -1,6 +1,6 @@
 #!/bin/bash
 # AI Investment Orchestrator - Installer v1.0
-# Usage: curl -fsSL https://raw.githubusercontent.com/Twozee-Tech/Invest_Research/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/Lukas-tek-no-logic/Invest_Research/main/install.sh | bash
 #
 # Sets up the orchestrator + Streamlit dashboard connecting to external Ghostfolio & llama-swap
 VERSION="1.0"
@@ -14,7 +14,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-REPO_RAW="https://raw.githubusercontent.com/Twozee-Tech/Invest_Research/main"
+REPO_RAW="https://raw.githubusercontent.com/Lukas-tek-no-logic/Invest_Research/main"
 TEMP_DIR=$(mktemp -d)
 trap "rm -rf $TEMP_DIR" EXIT
 
@@ -273,7 +273,7 @@ case "${1:-help}" in
         ;;
     update)
         echo "Updating..."
-        curl -fsSL https://raw.githubusercontent.com/Twozee-Tech/Invest_Research/main/install.sh | bash
+        curl -fsSL https://raw.githubusercontent.com/Lukas-tek-no-logic/Invest_Research/main/install.sh | bash
         ;;
     *)
         echo "AI Investment Orchestrator v__VERSION__"
